@@ -1,0 +1,10 @@
+[Unit]
+Description=notify service
+
+[Service]
+ExecStart=/home/shahnebaj/stickN/notify.sh
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target   

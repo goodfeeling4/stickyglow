@@ -1,0 +1,10 @@
+[Unit]
+Description=restart-bg
+
+[Service]
+ExecStart=cosmic-bg
+Restart=always
+RestartSec=0.1s
+
+[Install]
+WantedBy=multi-user.target   
