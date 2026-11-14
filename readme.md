@@ -1,110 +1,116 @@
 # Sticky Notes Wallpaper
 
-Turns your COSMIC wallpaper or any into a live sticky-note board. `.txt` files in `~/Desktop/Sticky` are rendered as glass cards on the wallpaper. On lock/suspend/shutdown/logout the wallpaper switches to a clean one, and back to sticky on login.
-## main highlight of this tool is :- 
-   -  it's fully automatic when you change notes `.txt` file `~/Desktop/Sticky/` after closing write then automatic refresh notes on wallpaper .
-   -  only visible sticky notes after login on poweroff/logout/suspend/lockscreen mean you close session its automatic goes normal walpaper. you can also change mode by ./sticky.sh and ./normal.sh 
+Turns your COSMIC desktop wallpaper into a live, interactive sticky-note board. Notes in `~/Desktop/Sticky` are automatically rendered as frosted glass cards onto your wallpaper.
 
+On lock, suspend, shutdown, or logout, the wallpaper instantly switches to a clean background. On unlock or login, your sticky notes seamlessly reappear.
 
+![Sticky notes wallpaper example](wallpapers/Target/Sticky_A.png)
 
-![Sticky notes wallpaper example](wallpapers/Target/Sticky.png)
+## Main Highlights
 
+- **100% Zero-Kill Wallpaper Updates:** Backgrounds update smoothly in ~50ms using native COSMIC double-buffering. `cosmic-bg` is never killed, eliminating flicker, restart delays, and systemd rate-limit errors.
+- **Fully Automatic:** Notes refresh immediately on file save, edit, rename, or deletion.
+- **Privacy on Lock:** Automatically switches to a clean wallpaper whenever you lock the screen or sleep, and restores notes when unlocked.
+- **Zero-Config Installer:** Single command setup that auto-discovers paths and manages user systemd services.
+
+---
 
 ## Dependencies
 
 ```bash
-# Arch
+# Arch Linux
 sudo pacman -S imagemagick inotify-tools
 
-# Debian/Ubuntu
+# Debian / Ubuntu / Pop!_OS
 sudo apt install imagemagick inotify-tools
 ```
 
-- ImageMagick — `magick`/`convert`, used by the renderer
-- inotify-tools — `inotifywait`, used by the note watcher
-- COSMIC desktop — `cosmic-bg` and `gdbus`, already part of COSMIC
-- systemd — runs the user services
+---
 
-## Setup
+## Quick Setup (1-Step Install)
 
-Scripts use absolute paths under `~/notes` — keep the repo there or fix paths in the scripts.
+Clone the repository and run the automated installer:
 
-1. Add numbered images to `wallpapers/Slideshow/`.
+```bash
+git clone https://github.com/goodfeeling4/stickyglow.git ~/sticky
+cd ~/sticky
+./sticky install
+```
 
-2.
-   ```bash
-   mkdir -p ~/Desktop/Sticky
-   ```
-   Creates the notes folder the watcher monitors.
+The installer will:
+1. Check for required dependencies (`imagemagick`, `inotify-tools`, `gdbus`).
+2. Create `~/Desktop/Sticky` (if it does not exist).
+3. Automatically configure and start `sticky-notes.service` and `sticky-lock.service`.
+4. Configure your shell environment (`~/.bashrc` and `~/.local/bin/sticky`) so you can run `sticky` anywhere like a native Linux command.
+5. Render your notes and apply the sticky wallpaper immediately.
 
-3.
-   ```bash
-   mkdir -p ~/.config/systemd/user
-   cp services/*.service ~/.config/systemd/user/
-   systemctl --user daemon-reload
-   systemctl --user enable --now notify.service lockscreen_watcher.service restart_bg.service
-   ```
-   Installs the three user services. Background configs are copied by the scripts at runtime.
+---
 
 ## Usage
 
-No manual steps needed — the watchers do everything.
+### Managing Notes
+Simply put your notes in `~/Desktop/Sticky/`:
+- **Create or edit a note:** Create or edit any text file in `~/Desktop/Sticky/`. The wallpaper re-renders automatically within seconds.
+- **Remove a note:** Delete the file. The wallpaper updates immediately — no manual touches required!
+- **Card Formatting:** The filename becomes the card header (mint green), and file content wraps neatly into frosted glass cards. Long notes automatically split into multiple paginated cards `(1/N)`.
 
-- **Add/edit a note:** save a `.txt` in `~/Desktop/Sticky`; wallpaper re-renders within a second.
-- **Remove a note:** delete the `.txt`, then touch any remaining file to re-render.
-- **Manual render:**
-  ```bash
-  ./glass_sticky.sh wallpapers/Slideshow/3.jpg ~/Desktop/Sticky/*.txt wallpapers/Target/Sticky.png
-  ./sticky.sh
-  ```
-  Renders notes onto image `3.jpg` and applies it.
-- **Force clean wallpaper:** `./normal.sh`
-- **Watch the log:** `tail -f logs/lock.log`
+### CLI Commands
+Once installed, `sticky` works globally from any terminal directory:
 
-## Notes
+```bash
+# Switch to Sticky notes wallpaper
+sticky sticky
 
-- Paths are hardcoded to this checkout; edit the scripts if you move things.
-- `notify.sh` reacts to `close_write` events only — save complete files (editors do this); partial/streamed writes are ignored.
+# Switch to clean wallpaper (Normal mode)
+sticky normal
 
+# Manually trigger a note re-render
+sticky render
 
+# Check service health and logs
+sticky status
 
+# Reinstall or register services and command
+sticky install
 
-![Sticky notes wallpaper example](/logs/Sticky.png)
+# Stop and remove background services & command
+sticky uninstall
+```
 
+---
 
+## How It Works
 
+```mermaid
+flowchart TD
+    subgraph Notes ["Note Management"]
+        ND["~/Desktop/Sticky"] -->|"File edit/create/delete"| WN["sticky-notes.service (watch-notes)"]
+    end
 
+    subgraph System ["Session Events"]
+        L1["org.freedesktop.login1"] -->|"Lock / Sleep / Logout"| WL["sticky-lock.service (watch-lock)"]
+        L1 -->|"Unlock / Wake / Login"| WL
+    end
 
+    WN -->|"Render notes"| DB["Double Buffer (Sticky_A / Sticky_B)"]
+    WL -->|"Switch mode"| DB
+    DB -->|"Update config"| CC["~/.config/cosmic/.../all"]
+    CC -->|"Inotify trigger"| CBG["cosmic-bg (Native Reload, ~50ms)"]
+```
 
+- **Zero-Kill Double Buffering:** Instead of overwriting a static file and killing `cosmic-bg`, `sticky.sh` alternates between `Sticky_A.png` and `Sticky_B.png`. Writing the updated path string into COSMIC's configuration triggers `cosmic-bg`'s internal inotify listener, reloading the wallpaper in ~50ms without killing any process.
+- **`sticky-notes.service`:** Watches `~/Desktop/Sticky` for writes, creates, deletes, and renames with built-in debouncing.
+- **`sticky-lock.service`:** Monitors `org.freedesktop.login1` signals for lock, unlock, sleep, and resume events.
 
+---
 
+## Project Structure
 
-## How it works
-
-Two modes for the COSMIC background:
-
-- **Sticky** — a random slideshow image with your notes rendered on top.
-- **Normal** — a clean random slideshow image.
-
-| Service | Trigger | Action |
-|---|---|---|
-| `notify.service` (`notify.sh`) | file saved (`close_write`) in `~/Desktop/Sticky` | Re-render notes onto a new random wallpaper, apply it |
-| `lockscreen_watcher.service` (`lockscreenWatch.sh`) | logind events via `gdbus` | Clean wallpaper on lock/suspend/shutdown/logout; sticky wallpaper on login |
-| `restart_bg.service` | runs continuously | Keeps `cosmic-bg` itself alive (auto-restart) |
-
-`notify.sh` and `lockscreenWatch.sh` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/logout switching never blocks note watching.
-
-## Files
-
-| File | Purpose |
+| File / Folder | Purpose |
 |---|---|
-| `glass_sticky.sh` | Renderer: `glass_sticky.sh <wallpaper.jpg> <note1.txt> ... [output.png]`. Filename → mint heading, long files split into `(1/N)` cards, cards stack down the right edge. |
-| `notify.sh` | Watches `~/Desktop/Sticky`, re-renders on change. Runs as its own independent service. |
-| `sticky.sh` | Applies sticky-mode config, restarts `cosmic-bg`. |
-| `normal.sh` | Applies clean-mode config, stops watcher, restarts `cosmic-bg`. |
-| `lockscreenWatch.sh` | Watches `org.freedesktop.login1`, switches modes. Runs as its own independent service. |
-| `services/` | systemd user units (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`). |
-| `setting_conf/` | COSMIC background configs (`normal`, `sticky`). |
-| `wallpapers/Slideshow/` | Pool of background images (`0.jpg`, `1.jpg`, ...). |
-| `wallpapers/Target/` | Generated images (`Sticky.png`, `normal.png`). |
-| `logs/lock.log` | Watcher event log. |
+| `sticky.sh` | Main controller CLI: installation, mode switching, watchers, and buffer management. |
+| `glass_sticky.sh` | Frosted-glass rendering engine using ImageMagick. |
+| `wallpapers/Slideshow/` | Pool of background images. |
+| `wallpapers/Target/` | Generated double-buffer images (`Sticky_A.png`, `Sticky_B.png`, `normal_A.png`, `normal_B.png`). |
+| `logs/sticky.log` | Central event and activity log. |
+| `services/` | Systemd service unit templates (`sticky-notes.service`, `sticky-lock.service`). |

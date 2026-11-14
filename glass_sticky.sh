@@ -33,8 +33,9 @@ done
 
 NUM_NOTES="${#TXT_FILES[@]}"
 if (( NUM_NOTES == 0 )); then
-  echo "Error: No input .txt files provided." >&2
-  exit 1
+  echo "info: No input .txt files provided. Using clean wallpaper." >&2
+  cp "$INPUT_IMG" "$OUTPUT_IMG"
+  exit 0
 fi
 
 # Detect ImageMagick 7 vs ImageMagick 6

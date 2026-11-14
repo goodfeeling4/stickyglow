@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ==============================================================================
+# Sticky Notes Wallpaper - Unified Manager & Controller
+# Cross-distro compatible (Pop!_OS / COSMIC, GNOME, Wayland, X11)
+# ==============================================================================
+
+SCRIPT_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+REPO_DIR="$(cd -- "$(dirname -- "$SCRIPT_PATH")" &>/dev/null && pwd)"
+
+# Standard XDG base directory paths
+XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+SYSTEMD_USER_DIR="$XDG_CONFIG_HOME/systemd/user"
+COSMIC_CONFIG_DIR="$XDG_CONFIG_HOME/cosmic/com.system76.CosmicBackground/v1"
+COSMIC_CONFIG_FILE="$COSMIC_CONFIG_DIR/all"
+
+# Desktop & notes directory (localized via xdg-user-dir if available)
+DEFAULT_DESKTOP="$HOME/Desktop"
+if command -v xdg-user-dir >/dev/null 2>&1; then
+  DEFAULT_DESKTOP="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
+fi
+NOTES_DIR="${STICKY_NOTES_DIR:-$DEFAULT_DESKTOP/Sticky}"
+
+# Internal asset & log directories
+WALLPAPER_DIR="$REPO_DIR/wallpapers/Slideshow"
+TARGET_DIR="$REPO_DIR/wallpapers/Target"
+LOG_DIR="$REPO_DIR/logs"
+LOG_FILE="$LOG_DIR/sticky.log"
+
+# Service names
+SERVICE_NOTES="sticky-notes.service"
+SERVICE_LOCK="sticky-lock.service"
+
+# Ensure execution permissions for renderer helper
+if [[ -f "$REPO_DIR/glass_sticky.sh" && ! -x "$REPO_DIR/glass_sticky.sh" ]]; then
+  chmod +x "$REPO_DIR/glass_sticky.sh"
+fi
+
+# ------------------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------------------
+
+log() {
+  local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
+  echo "$msg" >&2
+  mkdir -p "$LOG_DIR"
+  echo "$msg" >> "$LOG_FILE"
+}
+
+# Determine alternate buffer path so desktop watchers detect the path change
+get_next_buffer() {
+  local prefix="$1" # "Sticky" or "normal"
+  if [[ -f "$COSMIC_CONFIG_FILE" ]] && grep -q "${prefix}_A.png" "$COSMIC_CONFIG_FILE" 2>/dev/null; then
+    echo "${prefix}_B.png"
+  else
+    echo "${prefix}_A.png"
+  fi
+}
+
+# Apply wallpaper across supported desktop environments
+set_wallpaper() {
+  local img_path="$1"
+
+  # 1. COSMIC desktop environment (Pop!_OS / any distro with COSMIC)
+  if [[ -d "$COSMIC_CONFIG_DIR" ]] || command -v cosmic-bg >/dev/null 2>&1; then
+    mkdir -p "$COSMIC_CONFIG_DIR"
+    cat <<EOF > "$COSMIC_CONFIG_FILE"
+(
+    output: "all",
+    source: Path("$img_path"),
+    filter_by_theme: true,
+    rotation_frequency: 300,
+    filter_method: Lanczos,
+    scaling_mode: Zoom,
+    sampling_method: Alphanumeric,
+)
+EOF
+    return 0
+  fi
+
+  # 2. GNOME / Cinnamon
+  if command -v gsettings >/dev/null 2>&1 && [[ "${XDG_CURRENT_DESKTOP:-}" =~ (GNOME|Ubuntu|X-Cinnamon) ]]; then
+    gsettings set org.gnome.desktop.background picture-uri "file://$img_path" 2>/dev/null || true
+    gsettings set org.gnome.desktop.background picture-uri-dark "file://$img_path" 2>/dev/null || true
+    return 0
+  fi
+
+  # 3. Wayland generic (swww)
+  if command -v swww >/dev/null 2>&1; then
+    swww img "$img_path" 2>/dev/null || true
+    return 0
+  fi
+
+  # 4. X11 generic (feh)
+  if command -v feh >/dev/null 2>&1; then
+    feh --bg-fill "$img_path" 2>/dev/null || true
+    return 0
+  fi
+}
+
+# Pick a random background image from the wallpaper pool
+get_random_wallpaper() {
+  local wall_files=()
+  while IFS= read -r -d '' f; do
+    wall_files+=("$f")
+  done < <(find "$WALLPAPER_DIR" -maxdepth 1 -type f \( -iname "*.jpg" -o -iname "*.png" -o -iname "*.jpeg" -o -iname "*.webp" \) -print0 2>/dev/null)
+
+  if (( ${#wall_files[@]} == 0 )); then
+    echo ""
+    return 1
+  fi
+  local idx=$(( RANDOM % ${#wall_files[@]} ))
+  echo "${wall_files[$idx]}"
+}
+
+# ------------------------------------------------------------------------------
+# Core Commands
+# ------------------------------------------------------------------------------
+
+# Render notes onto wallpaper and save to the alternate buffer
+cmd_render() {
+  local base_img="${1:-}"
+  if [[ -z "$base_img" || ! -f "$base_img" ]]; then
+    base_img="$(get_random_wallpaper)"
+  fi
+  if [[ -z "$base_img" || ! -f "$base_img" ]]; then
+    log "Error: No background wallpapers found in $WALLPAPER_DIR"
+    return 1
+  fi
+
+  mkdir -p "$TARGET_DIR"
+  local target_filename="$(get_next_buffer "Sticky")"
+  local target_path="$TARGET_DIR/$target_filename"
+
+  local note_files=()
+  if [[ -d "$NOTES_DIR" ]]; then
+    while IFS= read -r -d '' f; do
+      local fname="$(basename "$f")"
+      # Skip hidden, backup, swap, or temporary files
+      if [[ "$fname" =~ ^\. || "$fname" =~ ~$ || "$fname" =~ \.(swp|tmp|bak|part)$ ]]; then
+        continue
+      fi
+      note_files+=("$f")
+    done < <(find "$NOTES_DIR" -maxdepth 1 -type f -print0 | sort -z)
+  fi
+
+  log "Rendering ${#note_files[@]} note(s) onto $(basename "$base_img") -> $target_filename..."
+  if (( ${#note_files[@]} > 0 )); then
+    "$REPO_DIR/glass_sticky.sh" "$base_img" "${note_files[@]}" "$target_path" >/dev/null 2>&1 || true
+  else
+    # No notes present: gracefully fallback to clean background
+    cp "$base_img" "$target_path"
+  fi
+
+  echo "$target_path"
+}
+
+# Switch to Sticky Mode (Render fresh wallpaper and apply)
+cmd_sticky() {
+  mkdir -p "$TARGET_DIR"
+  local target_path
+  target_path="$(cmd_render)"
+  if [[ -n "$target_path" && -f "$target_path" ]]; then
+    set_wallpaper "$target_path"
+    log "Applied Sticky Mode: $(basename "$target_path")"
+  else
+    log "Error: Failed to generate sticky wallpaper."
+    return 1
+  fi
+}
+
+# Switch to Normal Clean Mode (Copy random wallpaper to alternate buffer and apply)
+cmd_normal() {
+  mkdir -p "$TARGET_DIR"
+  local base_img
+  base_img="$(get_random_wallpaper)"
+  if [[ -z "$base_img" || ! -f "$base_img" ]]; then
+    log "Error: No background wallpapers found in $WALLPAPER_DIR"
+    return 1
+  fi
+
+  local target_filename="$(get_next_buffer "normal")"
+  local target_path="$TARGET_DIR/$target_filename"
+
+  cp "$base_img" "$target_path"
+  set_wallpaper "$target_path"
+  log "Applied Normal Mode: $(basename "$target_path") (from $(basename "$base_img"))"
+}
+
+# Watch notes folder for file modifications, creations, deletions, and moves
+cmd_watch_notes() {
+  mkdir -p "$NOTES_DIR"
+  log "Starting note watcher on: $NOTES_DIR"
+
+  if ! command -v inotifywait >/dev/null 2>&1; then
+    log "Error: inotifywait not found. Install inotify-tools."
+    exit 1
+  fi
+
+  inotifywait -m -e close_write,create,delete,moved_to,moved_from "$NOTES_DIR" --format "%e %f" 2>/dev/null |
+  while read -r event file; do
+    # Skip empty names, hidden files, backup/swap/temp files
+    if [[ -z "$file" || "$file" =~ ^\. || "$file" =~ ~$ || "$file" =~ \.(swp|tmp|bak|part)$ ]]; then
+      continue
+    fi
+
+    log "Note event ($event): $file"
+    
+    # Debounce rapid sequential events
+    while read -t 0.3 -r _ _; do :; done
+
+    # If currently in sticky mode, update wallpaper immediately
+    local current_is_sticky=false
+    if [[ -f "$COSMIC_CONFIG_FILE" ]] && grep -q "Sticky_" "$COSMIC_CONFIG_FILE" 2>/dev/null; then
+      current_is_sticky=true
+    fi
+
+    if [[ "$current_is_sticky" == "true" ]]; then
+      local target_path
+      target_path="$(cmd_render)"
+      if [[ -n "$target_path" && -f "$target_path" ]]; then
+        set_wallpaper "$target_path"
+        log "Live refreshed Sticky wallpaper: $(basename "$target_path")"
+      fi
+    else
+      log "Notes changed while in Normal mode; buffer rendered quietly."
+      cmd_render >/dev/null 2>&1 || true
+    fi
+  done
+}
+
+# Watch system lock/unlock/sleep events via logind
+cmd_watch_lock() {
+  log "Starting lockscreen & session watcher..."
+  if ! command -v gdbus >/dev/null 2>&1; then
+    log "Error: gdbus not found."
+    exit 1
+  fi
+
+  gdbus monitor --system --dest org.freedesktop.login1 |
+  while read -r line; do
+    # Screen Locked
+    if [[ "$line" == *"org.freedesktop.login1.Session.Lock"* ]]; then
+      log "Lockscreen Event: Screen Locked -> Switching to Normal mode"
+      cmd_normal
+    # Suspend / Sleep initiated
+    elif [[ "$line" == *"org.freedesktop.login1.Manager.PrepareForSleep (true,)"* ]]; then
+      log "Lockscreen Event: System Suspend -> Switching to Normal mode"
+      cmd_normal
+    # Shutdown / Restart initiated
+    elif [[ "$line" == *"org.freedesktop.login1.Manager.PrepareForShutdownWithMetadata"* ]]; then
+      log "Lockscreen Event: Shutdown/Restart -> Switching to Normal mode"
+      cmd_normal
+    # Screen Unlocked
+    elif [[ "$line" == *"org.freedesktop.login1.Session.Unlock"* ]]; then
+      log "Lockscreen Event: Screen Unlocked -> Switching to Sticky mode"
+      cmd_sticky
+    # System Waking from Sleep
+    elif [[ "$line" == *"org.freedesktop.login1.Manager.PrepareForSleep (false,)"* ]]; then
+      log "Lockscreen Event: Resume from Sleep -> Switching to Sticky mode"
+      cmd_sticky
+    # Greeter exit / user login
+    elif [[ "$line" == *"org.freedesktop.login1.Manager.UserRemoved"* ]]; then
+      log "Lockscreen Event: UserRemoved (Session unlocked/Greeter exit) -> Switching to Sticky mode"
+      cmd_sticky
+    # Greeter start / lock screen
+    elif [[ "$line" == *"org.freedesktop.login1.Manager.UserNew"* ]]; then
+      log "Lockscreen Event: UserNew (Greeter active) -> Switching to Normal mode"
+      cmd_normal
+    fi
+  done
+}
+
+# ------------------------------------------------------------------------------
+# Service & Installation Management
+# ------------------------------------------------------------------------------
+
+cmd_install() {
+  echo "=================================================="
+  echo "  Installing Sticky Notes Wallpaper (Zero-Config) "
+  echo "=================================================="
+
+  # 1. Check dependencies
+  local missing=()
+  command -v magick >/dev/null 2>&1 || command -v convert >/dev/null 2>&1 || missing+=("imagemagick")
+  command -v inotifywait >/dev/null 2>&1 || missing+=("inotify-tools")
+  command -v gdbus >/dev/null 2>&1 || missing+=("gdbus")
+
+  if (( ${#missing[@]} > 0 )); then
+    echo "Notice: Missing packages: ${missing[*]}"
+    echo "Install them using your package manager:"
+    echo "  - Debian / Ubuntu / Pop!_OS: sudo apt install imagemagick inotify-tools"
+    echo "  - Arch / Manjaro:            sudo pacman -S imagemagick inotify-tools"
+    echo "  - Fedora / RHEL:             sudo dnf install ImageMagick inotify-tools"
+    echo "  - openSUSE:                  sudo zypper install ImageMagick inotify-tools"
+    echo ""
+  fi
+
+  # 2. Setup project folders
+  mkdir -p "$NOTES_DIR"
+  mkdir -p "$TARGET_DIR"
+  mkdir -p "$LOG_DIR"
+  mkdir -p "$SYSTEMD_USER_DIR"
+
+  # 3. Stop running instances of our project's services if updating
+  systemctl --user stop "$SERVICE_NOTES" "$SERVICE_LOCK" 2>/dev/null || true
+
+  # 4. Generate systemd unit files using dynamic script path
+  cat <<EOF > "$SYSTEMD_USER_DIR/$SERVICE_NOTES"
+[Unit]
+Description=Sticky Notes Wallpaper - Note Watcher
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=$SCRIPT_PATH watch-notes
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
+EOF
+
+  cat <<EOF > "$SYSTEMD_USER_DIR/$SERVICE_LOCK"
+[Unit]
+Description=Sticky Notes Wallpaper - Lockscreen & Session Watcher
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=$SCRIPT_PATH watch-lock
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=default.target
+EOF
+
+  # 5. Add repository path to shell profile (~/.bashrc / ~/.zshrc) if not already in PATH
+  local bashrc="$HOME/.bashrc"
+  if [[ -f "$bashrc" ]] && ! grep -F -q "$REPO_DIR" "$bashrc"; then
+    cat <<EOF >> "$bashrc"
+
+# Sticky Notes Wallpaper PATH
+export PATH="$REPO_DIR:\$PATH"
+EOF
+  fi
+
+  local zshrc="$HOME/.zshrc"
+  if [[ -f "$zshrc" ]] && ! grep -F -q "$REPO_DIR" "$zshrc"; then
+    cat <<EOF >> "$zshrc"
+
+# Sticky Notes Wallpaper PATH
+export PATH="$REPO_DIR:\$PATH"
+EOF
+  fi
+
+  # 6. Reload systemd and enable services
+  systemctl --user daemon-reload
+  systemctl --user enable --now "$SERVICE_NOTES" "$SERVICE_LOCK"
+
+  # 7. Apply initial sticky wallpaper
+  cmd_sticky
+
+  echo ""
+  echo "Installation successful!"
+  echo "  - CLI PATH:    Added '$REPO_DIR' to PATH"
+  echo "  - Script:      $SCRIPT_PATH"
+  echo "  - Notes Dir:   $NOTES_DIR"
+  echo "  - Services:    $SERVICE_NOTES, $SERVICE_LOCK (Active & Enabled)"
+  echo ""
+  echo "You can now use 'sticky' in any terminal (run 'source ~/.bashrc' or open a new terminal)."
+}
+
+cmd_uninstall() {
+  echo "Uninstalling Sticky Notes Wallpaper..."
+
+  # Stop and disable only our project's services
+  systemctl --user stop "$SERVICE_NOTES" "$SERVICE_LOCK" 2>/dev/null || true
+  systemctl --user disable "$SERVICE_NOTES" "$SERVICE_LOCK" 2>/dev/null || true
+  rm -f "$SYSTEMD_USER_DIR/$SERVICE_NOTES" \
+        "$SYSTEMD_USER_DIR/$SERVICE_LOCK"
+  systemctl --user daemon-reload
+
+  # Remove PATH additions from shell profiles
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    if [[ -f "$rc" ]]; then
+      sed -i "\#export PATH=\"$REPO_DIR:\$PATH\"#d" "$rc" 2>/dev/null || true
+      sed -i '/# Sticky Notes Wallpaper PATH/d' "$rc" 2>/dev/null || true
+    fi
+  done
+
+  echo "Sticky Notes Wallpaper uninstalled successfully."
+}
+
+cmd_status() {
+  echo "=================================================="
+  echo "             Sticky Notes Status                  "
+  echo "=================================================="
+  echo "Repo Directory:  $REPO_DIR"
+  echo "Notes Directory: $NOTES_DIR"
+  echo ""
+  echo "--- Systemd Services ---"
+  systemctl --user status "$SERVICE_NOTES" "$SERVICE_LOCK" --no-pager || true
+  echo ""
+  echo "--- Current Wallpaper Setting ---"
+  if [[ -f "$COSMIC_CONFIG_FILE" ]]; then
+    grep "source:" "$COSMIC_CONFIG_FILE" || cat "$COSMIC_CONFIG_FILE"
+  else
+    echo "COSMIC config not active or using alternative desktop environment."
+  fi
+  echo ""
+  echo "--- Recent Activity Log ---"
+  if [[ -f "$LOG_FILE" ]]; then
+    tail -n 8 "$LOG_FILE"
+  else
+    echo "No log entries yet."
+  fi
+}
+
+cmd_help() {
+  cat <<EOF
+Usage: $0 <command>
+
+Commands:
+  install       Zero-config installation: registers systemd user services and adds sticky to PATH.
+  uninstall     Stops and removes systemd user services and shell PATH entry.
+  sticky        Renders sticky notes and applies wallpaper (Sticky mode).
+  normal        Applies a clean wallpaper without notes (Normal mode).
+  render [img]  Renders notes onto a wallpaper buffer without immediately applying.
+  watch-notes   Starts the inotify note directory watcher (daemon).
+  watch-lock    Starts the logind lockscreen/sleep watcher (daemon).
+  status        Displays live status of services, active wallpaper, and logs.
+  help          Shows this help message.
+EOF
+}
+
+# ------------------------------------------------------------------------------
+# Entrypoint Router
+# ------------------------------------------------------------------------------
+
+case "${1:-help}" in
+  install)
+    cmd_install
+    ;;
+  uninstall)
+    cmd_uninstall
+    ;;
+  sticky|apply-sticky)
+    cmd_sticky
+    ;;
+  normal|apply-normal)
+    cmd_normal
+    ;;
+  render)
+    shift
+    cmd_render "$@"
+    ;;
+  watch-notes)
+    cmd_watch_notes
+    ;;
+  watch-lock)
+    cmd_watch_lock
+    ;;
+  status)
+    cmd_status
+    ;;
+  help|--help|-h)
+    cmd_help
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    cmd_help
+    exit 1
+    ;;
+esac
