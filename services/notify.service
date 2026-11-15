@@ -2,7 +2,7 @@
 Description=notify service
 
 [Service]
-ExecStart=/home/shahnebaj/stickN/notify.sh
+ExecStart=/home/shahnebaj/sticky/notify.sh
 Restart=always
 RestartSec=5s
 

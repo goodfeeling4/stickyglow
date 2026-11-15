@@ -90,9 +90,15 @@ Two modes for the COSMIC background:
 |---|---|---|
 | `notify.service` (`notify.sh`) | file saved (`close_write`) in `~/Desktop/Sticky` | Re-render notes onto a new random wallpaper, apply it |
 | `lockscreen_watcher.service` (`lockscreenWatch.sh`) | logind events via `gdbus` | Clean wallpaper on lock/suspend/shutdown/logout; sticky wallpaper on login |
-| `restart_bg.service` | runs continuously | Keeps `cosmic-bg` itself alive (auto-restart) |
+| `restart_bg.service` | runs continuously | Safety net — restarts `cosmic-bg` only if it ever crashes (normal refresh never kills it) |
 
 `notify.sh` and `lockscreenWatch.sh` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/logout switching never blocks note watching.
+
+## How the wallpaper refresh works (no restart)
+
+`cosmic-bg` watches `~/.config/cosmic/com.system76.CosmicBackground/v1/all` with inotify and re-renders on any config change — but it ignores a write whose parsed content is unchanged, which would freeze note edits (same config, new PNG). So the scripts flip `rotation_frequency` between `300` and `301` on every apply. The value is meaningless for single-image sources, but the difference forces `cosmic-bg` to reload and crossfade to the freshly rendered PNG.
+
+The config is written atomically: `sed` renders the template into a `.atomicwrite-*` temp file inside the config dir, then `mv` swaps it into place — mirroring how COSMIC itself writes configs, so the watcher fires exactly once with complete content. `cosmic-bg` is never killed; `restart_bg.service` only rescues it if it crashes.
 
 ## Files
 
@@ -100,8 +106,8 @@ Two modes for the COSMIC background:
 |---|---|
 | `glass_sticky.sh` | Renderer: `glass_sticky.sh <wallpaper.jpg> <note1.txt> ... [output.png]`. Filename → mint heading, long files split into `(1/N)` cards, cards stack down the right edge. |
 | `notify.sh` | Watches `~/Desktop/Sticky`, re-renders on change. Runs as its own independent service. |
-| `sticky.sh` | Applies sticky-mode config, restarts `cosmic-bg`. |
-| `normal.sh` | Applies clean-mode config, stops watcher, restarts `cosmic-bg`. |
+| `sticky.sh` | Applies sticky-mode config atomically; `cosmic-bg` re-renders the wallpaper live. |
+| `normal.sh` | Applies clean-mode config atomically, stops the sticky renderer; `cosmic-bg` re-renders live. |
 | `lockscreenWatch.sh` | Watches `org.freedesktop.login1`, switches modes. Runs as its own independent service. |
 | `services/` | systemd user units (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`). |
 | `setting_conf/` | COSMIC background configs (`normal`, `sticky`). |
