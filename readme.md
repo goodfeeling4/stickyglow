@@ -67,6 +67,7 @@ Everything goes through one command: `./sticky <command>` (see `./sticky help`).
 - The script resolves its own directory at runtime (`SCRIPT_DIR`) — the repo can live anywhere.
 - The systemd units get the absolute path baked in by `./sticky install`; rerun it after moving the repo.
 - `serve` reacts to `close_write` events only — save complete files (editors do this); partial/streamed writes are ignored. It watches the notes folder recursively, so subdirectories are covered too.
+- `serve` keeps one render in flight at most: before every render it checks for a running one and gracefully stops it (SIGTERM to the render job's process group; the job removes its temp dir and exits), then renders with the latest note contents. Rapid saves collapse into a single final render instead of a queue.
 
 
 
@@ -90,7 +91,7 @@ Two modes for the COSMIC background:
 
 | Service | Trigger | Action |
 |---|---|---|
-| `notify.service` (`sticky serve`) | file saved (`close_write`) in `~/Desktop/Sticky` or its subdirectories | Re-render notes onto a new random wallpaper, apply it |
+| `notify.service` (`sticky serve`) | file saved (`close_write`) in `~/Desktop/Sticky` or its subdirectories | Stops any in-flight render, then re-renders notes onto a new random wallpaper with the latest notes, applies it |
 | `session_state.service` | started with `graphical-session.target`, stopped at logout | Last rendered sticky image on login (`ExecStart`), clean wallpaper on logout (`ExecStopPost`) |
 | `lockscreen_watcher.service` (`sticky watch-lock`) | logind events via `gdbus` while logged in | Clean wallpaper on lock, suspend and shutdown/reboot |
 
@@ -101,6 +102,12 @@ Login and logout are detected by systemd itself (`session_state.service` starts 
 `cosmic-bg` watches `~/.config/cosmic/com.system76.CosmicBackground/v1/all` with inotify and re-renders on any config change — but it ignores a write whose parsed content is unchanged, which would freeze note edits (same config, new PNG). So the scripts flip `rotation_frequency` between `300` and `301` on every apply. The value is meaningless for single-image sources, but the difference forces `cosmic-bg` to reload and crossfade to the freshly rendered PNG.
 
 The config is written atomically: `sed` renders the template into a `.atomicwrite-*` temp file inside the config dir, then `mv` swaps it into place — mirroring how COSMIC itself writes configs, so the watcher fires exactly once with complete content. `cosmic-bg` is never killed — sticky only edits its config file, and `cosmic-bg` itself is started and owned by the COSMIC session.
+
+## How rapid note saves are handled (one render at a time)
+
+Every render runs as a detached job in its own process group, tracked by a pid file (`wallpapers/Target/.render.pid`). When a note is saved while a render is still running, `serve` first sends SIGTERM to that whole group — the job's trap removes its temp dir and exits, and `serve` waits until it is really dead — then starts a fresh render that reads the latest note contents. The last save always wins; nothing is queued.
+
+This is safe by construction: the rendered image is composed in a private temp dir and published with a single atomic `mv`, and the cosmic config is written temp-file-then-`mv` as well. A canceled render therefore can never leave a half-written wallpaper image or config behind, and two renders can never interleave their output.
 
 ## Files
 

@@ -16,6 +16,7 @@ SLIDESHOW_DIR="$SCRIPT_DIR/wallpapers/Slideshow"
 TARGET_DIR="$SCRIPT_DIR/wallpapers/Target"
 STICKY_IMG="$TARGET_DIR/Sticky.png"
 NORMAL_IMG="$TARGET_DIR/normal.png"
+RENDER_PID_FILE="$TARGET_DIR/.render.pid"
 
 SERVICES="notify.service lockscreen_watcher.service session_state.service"
 
@@ -34,7 +35,8 @@ Usage: sticky <command>
   off          show a clean random image, no notes (normal mode)
   render       render notes only: sticky render [image] [output.png]
   refresh      render notes + apply in one step
-  serve        watch ~/Desktop/Sticky (and subdirs) and refresh on save   (service)
+   serve        watch ~/Desktop/Sticky (and subdirs) and refresh on save —
+                one render at a time: a new save stops the running render first   (service)
   watch-lock   watch lock/sleep/shutdown and switch off    (service)
   log          follow the event log
   help         show this help
@@ -90,6 +92,58 @@ apply_config() {
       -e "s/^\( *rotation_frequency: \)[0-9]*,\$/\1${new},/" \
       "$SCRIPT_DIR/setting_conf/$name" > "$COSMIC_DIR/.atomicwrite-$name.tmp"
   mv "$COSMIC_DIR/.atomicwrite-$name.tmp" "$COSMIC_CONF"
+}
+
+# ------------------------------------------------- render job control (serve)
+#
+# serve keeps exactly one render in flight. On every saved note it first
+# checks for a running render and gracefully stops it, then starts a fresh
+# one with the latest note contents — the last save always wins.
+#
+# Graceful means: the render job runs detached in its own process group
+# (setsid), a stop sends SIGTERM to that whole group (the job shell and any
+# in-flight magick child die together), the job's TERM trap removes its
+# private temp dir, and stop_render waits until the job is really dead
+# before the next render starts. Publishing is always temp file + atomic
+# mv, so the wallpaper image is never left half-written and two renders
+# can never interleave their output.
+
+render_running() {
+  # echoes the pid of a live render job (0/1 as exit status)
+  local pid
+  [ -f "$RENDER_PID_FILE" ] || return 1
+  pid=$(cat "$RENDER_PID_FILE" 2>/dev/null)
+  # stale pid file (job died, or pid reused by something else) -> prune
+  if [[ ! "$pid" =~ ^[0-9]+$ ]] || \
+     ! tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q "__render-job"; then
+    rm -f "$RENDER_PID_FILE"
+    return 1
+  fi
+  echo "$pid"
+}
+
+stop_render() {
+  # gracefully stop the in-flight render, if any, and wait for its death
+  local pid i
+  pid=$(render_running) || return 0
+  log_line "serve: stopping in-flight render (pid $pid)"
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  kill -KILL -- "-$pid" 2>/dev/null
+  kill -KILL "$pid" 2>/dev/null
+  log_line "serve: in-flight render stopped"
+}
+
+start_render() {
+  # stop any running render, then start a fresh one, detached in its own
+  # session so the next stop can take the whole job down with one signal
+  stop_render
+  log_line "serve: starting render"
+  setsid "$SCRIPT_DIR/sticky" __render-job </dev/null >>"$LOG" 2>&1 &
+  echo $! > "$RENDER_PID_FILE"
 }
 
 # ------------------------------------------------------------------ renderer
@@ -763,6 +817,13 @@ cmd_status() {
     echo "  no config at $COSMIC_CONF yet (run: sticky on or sticky off)"
   fi
 
+  echo "== render =="
+  if pid=$(render_running); then
+    echo "  in-flight render: pid $pid"
+  else
+    echo "  render: idle"
+  fi
+
   echo "== files =="
   echo "  notes    : $(find "$NOTES_DIR" -type f 2>/dev/null | wc -l) file(s) in $NOTES_DIR"
   echo "  slideshow: $(ls "$SLIDESHOW_DIR"/*.jpg 2>/dev/null | wc -l) image(s) in $SLIDESHOW_DIR"
@@ -820,16 +881,33 @@ cmd_refresh() {
   apply_config sticky
 }
 
+cmd_render_job() {
+  # internal: one render+apply execution, detached by start_render.
+  # records the real job pid (covers a forking setsid) and makes a cancel
+  # graceful: on TERM it removes its temp dir and exits — nothing is ever
+  # written to the wallpaper image except whole, atomically moved files.
+  echo $$ > "$RENDER_PID_FILE"
+  TMP_DIR=""
+  trap 'rm -rf "${TMP_DIR:-}" 2>/dev/null; exit 143' TERM
+  if cmd_refresh; then
+    log_line "serve: render finished"
+  else
+    log_line "serve: render failed"
+  fi
+}
+
 cmd_serve() {
-  # watch the notes folder recursively, refresh on every saved file
+  # watch the notes folder recursively; on every saved file stop the
+  # in-flight render (if any) and start a fresh one with the latest notes
   mkdir -p "$NOTES_DIR"
+  stop_render
   echo "sticky: watching $NOTES_DIR (and subdirectories) for saved notes"
   /usr/bin/inotifywait -m -r -e close_write "$NOTES_DIR" |
   while read -r line; do
     case "$line" in
       *CLOSE_WRITE*)
         log_line "$line from serve"
-        cmd_refresh
+        start_render
         ;;
     esac
   done
@@ -880,6 +958,7 @@ case "${1:-help}" in
   render)         shift; cmd_render "$@" ;;
   refresh)        cmd_refresh ;;
   serve)          cmd_serve ;;
+  __render-job)   cmd_render_job ;;
   watch-lock)     cmd_watch_lock ;;
   log)            cmd_log ;;
   help|--help|-h) show_help ;;

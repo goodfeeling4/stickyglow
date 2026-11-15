@@ -1,5 +1,12 @@
 [Unit]
-Description=notify service
+Description=sticky notes watcher — re-render on save, one render at a time
+
+# ExecStart runs `sticky serve`: on every saved note it checks for an
+# in-flight render first, gracefully stops it (SIGTERM to the render job's
+# process group — the job cleans its temp dir and dies before the new
+# render starts; output is published only via atomic mv, so nothing is
+# ever half-written), then renders the wallpaper with the latest notes.
+# So N rapid saves = 1 final render, not N queued renders.
 
 [Service]
 ExecStart=__STICKY_DIR__/sticky serve
