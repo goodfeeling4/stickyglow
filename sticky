@@ -34,7 +34,7 @@ Usage: sticky <command>
   off          show a clean random image, no notes (normal mode)
   render       render notes only: sticky render [image] [output.png]
   refresh      render notes + apply in one step
-  serve        watch ~/Desktop/Sticky and refresh on save   (service)
+  serve        watch ~/Desktop/Sticky (and subdirs) and refresh on save   (service)
   watch-lock   watch lock/sleep/login and switch on/off    (service)
   log          follow the event log
   help         show this help
@@ -55,6 +55,23 @@ random_image() {
   fi
   idx=$(( RANDOM % count ))
   ls "$SLIDESHOW_DIR"/*.jpg | sed -n "$(( idx + 1 ))p"
+}
+
+# fills the global array NOTES with all note files, root level first,
+# then grouped per subdirectory (subdir order alphabetical).
+# hidden files/directories (like a .git repo inside the notes dir) are skipped.
+collect_notes() {
+  NOTES=()
+  local SUB_NOTES=() f rel
+  while IFS= read -r -d '' f; do
+    rel="${f#"$NOTES_DIR"/}"
+    if [[ "$rel" == */* ]]; then
+      SUB_NOTES+=("$f")
+    else
+      NOTES+=("$f")
+    fi
+  done < <(find "$NOTES_DIR" \( -name '.*' -prune \) -o -type f -print0 2>/dev/null | sort -z)
+  NOTES+=("${SUB_NOTES[@]}")
 }
 
 apply_config() {
@@ -335,14 +352,17 @@ render_notes() {
   CURRENT_Y="$MARGIN_Y"
   COL_MAX_W=0
 
-  local i FILE BASENAME RAW_HEADING RAW_TEXT
+  local i FILE REL RAW_HEADING RAW_TEXT
   for i in "${!TXT_FILES[@]}"; do
     FILE="${TXT_FILES[$i]}"
 
-    # Extract heading from note filename and wrap long headings
-    BASENAME="$(basename "$FILE")"
-    RAW_HEADING="${BASENAME%.*}"
+    # Heading = path relative to the notes dir, so subdirectory names show up:
+    # ~/Desktop/Sticky/work/bugs.txt -> "WORK / BUGS"
+    REL="${FILE#"$NOTES_DIR"/}"
+    [ "$REL" = "$FILE" ] && REL="$(basename "$FILE")"
+    RAW_HEADING="${REL%.*}"
     RAW_HEADING="${RAW_HEADING//_/ }"
+    RAW_HEADING="${RAW_HEADING//\// / }"
     RAW_HEADING="${RAW_HEADING^^}"
     RAW_HEADING="$(printf '%s' "$RAW_HEADING" | fold -s -w "$HEAD_CHARS_PER_LINE" | fold -w "$HEAD_CHARS_PER_LINE")"
 
@@ -439,7 +459,7 @@ cmd_status() {
   fi
 
   echo "== files =="
-  echo "  notes    : $(ls "$NOTES_DIR" 2>/dev/null | wc -l) file(s) in $NOTES_DIR"
+  echo "  notes    : $(find "$NOTES_DIR" -type f 2>/dev/null | wc -l) file(s) in $NOTES_DIR"
   echo "  slideshow: $(ls "$SLIDESHOW_DIR"/*.jpg 2>/dev/null | wc -l) image(s) in $SLIDESHOW_DIR"
   echo "  targets  : $(ls "$TARGET_DIR" 2>/dev/null | tr '\n' ' ')"
   echo "  log      : $LOG"
@@ -473,23 +493,33 @@ cmd_render() {
     echo "Error: image '$img' not found" >&2
     return 1
   fi
-  render_notes "$img" "$NOTES_DIR"/* "$out"
+  collect_notes
+  if (( ${#NOTES[@]} == 0 )); then
+    echo "Error: no note files found in $NOTES_DIR" >&2
+    return 1
+  fi
+  render_notes "$img" "${NOTES[@]}" "$out"
 }
 
 cmd_refresh() {
   # render notes on a random image, then apply it
   local img
   img=$(random_image) || return 1
+  collect_notes
+  if (( ${#NOTES[@]} == 0 )); then
+    echo "Error: no note files found in $NOTES_DIR" >&2
+    return 1
+  fi
   echo "sticky: rendering notes onto $(basename "$img")"
-  render_notes "$img" "$NOTES_DIR"/* "$STICKY_IMG" || return 1
+  render_notes "$img" "${NOTES[@]}" "$STICKY_IMG" || return 1
   apply_config sticky
 }
 
 cmd_serve() {
-  # watch the notes folder, refresh on every saved file
+  # watch the notes folder recursively, refresh on every saved file
   mkdir -p "$NOTES_DIR"
-  echo "sticky: watching $NOTES_DIR for saved notes"
-  /usr/bin/inotifywait -m -e close_write "$NOTES_DIR" |
+  echo "sticky: watching $NOTES_DIR (and subdirectories) for saved notes"
+  /usr/bin/inotifywait -m -r -e close_write "$NOTES_DIR" |
   while read -r line; do
     case "$line" in
       *CLOSE_WRITE*)

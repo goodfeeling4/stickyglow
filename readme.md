@@ -1,8 +1,9 @@
 # Sticky Notes Wallpaper
 
-Turns your COSMIC wallpaper or any into a live sticky-note board. `.txt` files in `~/Desktop/Sticky` are rendered as glass cards on the wallpaper. On lock/suspend/shutdown/logout the wallpaper switches to a clean one, and back to sticky on login.
+Turns your COSMIC wallpaper or any into a live sticky-note board. `.txt` files in `~/Desktop/Sticky` (and its subdirectories) are rendered as glass cards on the wallpaper — a subdirectory name becomes part of the card heading (`work/bugs.txt` → `WORK / BUGS`). On lock/suspend/shutdown/logout the wallpaper switches to a clean one, and back to sticky on login.
 ## main highlight of this tool is :- 
-   -  it's fully automatic when you change notes `.txt` file `~/Desktop/Sticky/` after closing write then automatic refresh notes on wallpaper .
+   -  it's fully automatic when you change notes `.txt` file `~/Desktop/Sticky/` (subdirectories included) after closing write then automatic refresh notes on wallpaper .
+   -  subdirectories of `~/Desktop/Sticky/` are rendered too — notes are grouped per folder and the folder name shows in the heading (`~/Desktop/Sticky/work/bugs.txt` → heading `WORK / BUGS`).
    -  only visible sticky notes after login on poweroff/logout/suspend/lockscreen mean you close session its automatic goes normal walpaper. you can also change mode by `./sticky on` and `./sticky off`
 
 
@@ -49,7 +50,8 @@ To remove everything again: `./sticky uninstall` — stops and deletes the three
 
 Everything goes through one command: `./sticky <command>` (see `./sticky help`).
 
-- **Add/edit a note:** save a file in `~/Desktop/Sticky`; wallpaper re-renders within a second (`serve` watcher).
+- **Add/edit a note:** save a file in `~/Desktop/Sticky` or any of its subdirectories; wallpaper re-renders within a second (`serve` watcher).
+- **Group notes:** put them in a subdirectory (`~/Desktop/Sticky/work/`) — the folder name is prefixed to the card heading.
 - **Remove a note:** delete the file, then touch any remaining note to re-render.
 - **Render only (no apply):** `./sticky render` — random image; or pick one: `./sticky render wallpapers/Slideshow/3.jpg`
 - **Render + apply in one step:** `./sticky refresh`
@@ -63,7 +65,7 @@ Everything goes through one command: `./sticky <command>` (see `./sticky help`).
 
 - The script resolves its own directory at runtime (`SCRIPT_DIR`) — the repo can live anywhere.
 - The systemd units get the absolute path baked in by `./sticky install`; rerun it after moving the repo.
-- `serve` reacts to `close_write` events only — save complete files (editors do this); partial/streamed writes are ignored.
+- `serve` reacts to `close_write` events only — save complete files (editors do this); partial/streamed writes are ignored. It watches the notes folder recursively, so subdirectories are covered too.
 
 
 
@@ -87,7 +89,7 @@ Two modes for the COSMIC background:
 
 | Service | Trigger | Action |
 |---|---|---|
-| `notify.service` (`sticky serve`) | file saved (`close_write`) in `~/Desktop/Sticky` | Re-render notes onto a new random wallpaper, apply it |
+| `notify.service` (`sticky serve`) | file saved (`close_write`) in `~/Desktop/Sticky` or its subdirectories | Re-render notes onto a new random wallpaper, apply it |
 | `lockscreen_watcher.service` (`sticky watch-lock`) | logind events via `gdbus` | Clean wallpaper on lock/suspend/shutdown/logout; last rendered sticky image on login |
 | `restart_bg.service` | runs continuously | Safety net — restarts `cosmic-bg` only if it ever crashes (normal refresh never kills it) |
 
