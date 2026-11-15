@@ -104,12 +104,122 @@ get_dims() {
   echo "$w $h"
 }
 
+md_to_pango() {
+  # stdin: raw markdown text; stdout: pango markup, one line per source line.
+  # Sizes are pango absolute sizes (1024ths of a point) passed in as args:
+  # md_to_pango <base> <h1> <h2> <h3> <h4> <h5>
+  local base="$1" h1="$2" h2="$3" h3="$4" h4="$5" h5="$6"
+  awk -v BASE="$base" -v H1="$h1" -v H2="$h2" -v H3="$h3" -v H4="$h4" -v H5="$h5" '
+    BEGIN { code = 0 }
+    /^[ \t]*(```|~~~)/ { code = !code; print ""; next }
+    {
+      line = $0
+      gsub(/\t/, "    ", line)
+      # XML-escape content (doubled: the pango coder decodes entities once
+      # before pango parses the markup, so &amp;lt; must arrive as &amp;amp;lt;)
+      gsub(/&/, "\\&amp;amp;", line)
+      gsub(/</, "\\&amp;lt;", line)
+      gsub(/>/, "\\&amp;gt;", line)
+
+      if (code) {
+        print "<tt>" line "</tt>"
+        next
+      }
+
+      if (match(line, /^#{1,6} /)) {
+        lvl = RLENGTH - 1
+        text = substr(line, RLENGTH + 1)
+        sub(/ +#+$/, "", text)
+        size = (lvl == 1 ? H1 : lvl == 2 ? H2 : lvl == 3 ? H3 : lvl == 4 ? H4 : lvl == 5 ? H5 : BASE)
+        print "<span size=\"" size "\" weight=\"bold\">" text "</span>"
+        next
+      }
+
+      if (line ~ /^ ?(-{3,}|\*{3,}|_{3,}) ?$/) {
+        print "<span foreground=\"#66727f\">────────────────</span>"
+        next
+      }
+
+      if (match(line, /^( ?&amp;gt;)+ ?/)) {
+        print "<i><span foreground=\"#8d99a6\">" substr(line, RLENGTH + 1) "</span></i>"
+        next
+      }
+
+      if (match(line, /^[ \t]*[-*+] /)) {
+        indent = substr(line, 1, RLENGTH - 2)
+        line = indent "&#8226; " substr(line, RLENGTH + 1)
+      }
+
+      print line
+    }
+  ' | sed -E \
+      -e 's|!\[([^]]*)\]\(([^)]*)\)|<i>\1</i>|g' \
+      -e 's|&amp;lt;(https?://[^ ]*)&amp;gt;|<u><span foreground="#7ec8ff">\1</span></u>|g' \
+      -e 's|\[([^]]+)\]\(([^)]*)\)|<u><span foreground="#7ec8ff">\1</span></u>|g' \
+      -e 's|`([^`]*)`|<tt>\1</tt>|g' \
+      -e 's|\*\*\*([^*]+)\*\*\*|<b><i>\1</i></b>|g' \
+      -e 's|\*\*([^*]+)\*\*|<b>\1</b>|g' \
+      -e 's|\*([^*\n]+)\*|<i>\1</i>|g' \
+      -e 's|~~([^~]+)~~|<s>\1</s>|g' \
+      -e 's@(^|[[:space:]])_([^_]+)_([[:space:][:punct:]]|$)@\1<i>\2</i>\3@g' \
+      -e 's|%|%%|g' \
+      -e 's|\\|\\\\|g'
+}
+
 render_note_card() {
+  # plain-text card: renders the body text, then hands off to render_card
   local raw_heading="$1"
   local raw_body="$2"
+  # escape IM property sequences (%% -> %, \\ -> \) before -annotate
+  raw_body="${raw_body//\\/\\\\}"
+  raw_body="${raw_body//%/%%}"
+
+  # 2. Render light off-white body text (#e6ebf2) with drop shadow, trim to bounds
+  "${IM[@]}" -size "${IMG_W}x$(( IMG_H * 2 ))" xc:none \
+    -gravity northwest \
+    -fill "rgba(0,0,0,0.65)" -pointsize "$FONT_SIZE" -annotate +1+1 "${raw_body//%/%%}" \
+    -fill "rgba(230,235,242,0.92)" -pointsize "$FONT_SIZE" -annotate +0+0 "${raw_body//%/%%}" \
+    -trim +repage \
+    "$TMP_DIR/text.png"
+
+  read -r ACTUAL_TEXT_W ACTUAL_TEXT_H < <(get_dims "$TMP_DIR/text.png")
+  render_card "$raw_heading" "$TMP_DIR/text.png" "$ACTUAL_TEXT_W" "$ACTUAL_TEXT_H"
+}
+
+render_md_card() {
+  # markdown card: renders pango markup like a VS Code md preview, then hands
+  # off to render_card. Falls back to plain rendering (caller) on failure.
+  local raw_heading="$1"
+  local markup="$2"
+
+  # match the plain-text cards' look (IM default resolves to italic sans)
+  markup="<span font=\"Sans Italic\">${markup}</span>"
+
+  if ! "${IM[@]}" -background none -density 72 -size "${MAX_TEXT_W}x" -pointsize "$FONT_SIZE" \
+      "pango:${markup}" "$TMP_DIR/md_text.png" 2>/dev/null; then
+    return 1
+  fi
+  "${IM[@]}" "$TMP_DIR/md_text.png" -trim +repage "$TMP_DIR/md_text.png" 2>/dev/null || return 1
+
+  local body_w body_h
+  read -r body_w body_h < <(get_dims "$TMP_DIR/md_text.png")
+  if [[ ! "$body_w" =~ ^[0-9]+$ ]] || [[ ! "$body_h" =~ ^[0-9]+$ ]] || (( body_w == 0 )); then
+    return 1
+  fi
+
+  render_card "$raw_heading" "$TMP_DIR/md_text.png" "$body_w" "$body_h"
+}
+
+render_card() {
+  # assembles one glass card around an already-rendered body image:
+  # $1 = heading text, $2 = body png path, $3 = body width, $4 = body height
+  local raw_heading="$1"
+  local body_png="$2"
+  local body_w="$3"
+  local body_h="$4"
 
   local heading_text="${raw_heading//%/%%}"
-  local note_text="${raw_body//%/%%}"
+  heading_text="${heading_text//\\/\\\\}"
   local canvas_h=$(( IMG_H * 2 ))
 
   # 1. Render mint-green bold heading (#5dd684) and trim to exact bounds
@@ -123,18 +233,8 @@ render_note_card() {
 
   read -r HEAD_W HEAD_H < <(get_dims "$TMP_DIR/heading.png")
 
-  # 2. Render light off-white body text (#e6ebf2) and trim to exact bounds
-  "${IM[@]}" -size "${IMG_W}x${canvas_h}" xc:none \
-    -gravity northwest \
-    -fill "rgba(0,0,0,0.65)" -pointsize "$FONT_SIZE" -annotate +1+1 "$note_text" \
-    -fill "rgba(230,235,242,0.92)" -pointsize "$FONT_SIZE" -annotate +0+0 "$note_text" \
-    -trim +repage \
-    "$TMP_DIR/text.png"
-
-  read -r ACTUAL_TEXT_W ACTUAL_TEXT_H < <(get_dims "$TMP_DIR/text.png")
-
-  # 3. Calculate dynamic width and free-form height from content
-  local content_w="$ACTUAL_TEXT_W"
+  # 3. Card width adapts to the widest of heading / body
+  local content_w="$body_w"
   if (( HEAD_W > content_w )); then
     content_w="$HEAD_W"
   fi
@@ -143,7 +243,7 @@ render_note_card() {
   local body_y=$(( divider_y + 1 + TEXT_PAD ))
 
   local note_w=$(( content_w + TEXT_PAD * 2 ))
-  local note_h=$(( body_y + ACTUAL_TEXT_H + TEXT_PAD ))
+  local note_h=$(( body_y + body_h + TEXT_PAD ))
 
   if (( note_w < 90 )); then
     note_w=90
@@ -213,10 +313,10 @@ render_note_card() {
     -draw "roundrectangle 0,0 $((note_w-1)),$((note_h-1)) ${RADIUS},${RADIUS}" \
     "$TMP_DIR/glass_bordered.png"
 
-  # 8. Composite heading and body text onto the dark glass block
+  # 8. Composite heading and body content onto the dark glass block
   "${IM[@]}" "$TMP_DIR/glass_bordered.png" \
     "$TMP_DIR/heading.png" -gravity northwest -geometry "+${TEXT_PAD}+${HEAD_PAD_Y}" -compose Over -composite \
-    "$TMP_DIR/text.png" -gravity northwest -geometry "+${TEXT_PAD}+${body_y}" -compose Over -composite \
+    "$body_png" -gravity northwest -geometry "+${TEXT_PAD}+${body_y}" -compose Over -composite \
     "$TMP_DIR/final_card.png"
 
   # Format geometry with explicit signs (+X+Y or -X-Y) to avoid "+-5" syntax errors
@@ -280,6 +380,13 @@ render_notes() {
     return 1
   fi
 
+  # Pango coder available? (.md files render as markdown preview when it is)
+  if "${ID[@]}" -list format 2>/dev/null | grep -qi 'PANGO'; then
+    PANGO_OK=1
+  else
+    PANGO_OK=0
+  fi
+
   TMP_DIR="$(mktemp -d)"
 
   # Get input image dimensions
@@ -334,6 +441,14 @@ render_notes() {
     HEAD_CHARS_PER_LINE=8
   fi
 
+  # Pango font sizes (1024ths of a point) for markdown rendering
+  PANGO_BASE=$(( FONT_SIZE * 1024 ))
+  PANGO_H1=$(( PANGO_BASE * 18 / 10 ))
+  PANGO_H2=$(( PANGO_BASE * 15 / 10 ))
+  PANGO_H3=$(( PANGO_BASE * 13 / 10 ))
+  PANGO_H4=$(( PANGO_BASE * 12 / 10 ))
+  PANGO_H5=$(( PANGO_BASE * 11 / 10 ))
+
   # Estimate maximum lines per single sticky note so a huge file splits instead of clipping
   LINE_H_EST=$(( FONT_SIZE * 135 / 100 ))
   if (( LINE_H_EST < 18 )); then
@@ -366,13 +481,78 @@ render_notes() {
     RAW_HEADING="${RAW_HEADING^^}"
     RAW_HEADING="$(printf '%s' "$RAW_HEADING" | fold -s -w "$HEAD_CHARS_PER_LINE" | fold -w "$HEAD_CHARS_PER_LINE")"
 
-    # Read body text, strip CR, and word-wrap to max width
-    RAW_TEXT="$(tr -d '\r' < "$FILE" | fold -s -w "$CHARS_PER_LINE" | fold -w "$CHARS_PER_LINE")"
+    # Read body text and strip CR (wrapping happens per file type below)
+    RAW_TEXT="$(tr -d '\r' < "$FILE")"
     if [[ -z "${RAW_TEXT//[[:space:]]/}" ]]; then
       continue
     fi
 
-    # Split into lines so oversized single files automatically break into multiple cards
+    local EXT="${FILE##*.}"
+    EXT="${EXT,,}"
+
+    if [[ "$EXT" == md || "$EXT" == markdown ]] && (( PANGO_OK )); then
+      # Markdown: convert to pango markup once; pango wraps long lines, so
+      # cards are split by estimated rendered height, not source line count
+      mapfile -t MARKUP_LINES < <(printf '%s\n' "$RAW_TEXT" | md_to_pango "$PANGO_BASE" "$PANGO_H1" "$PANGO_H2" "$PANGO_H3" "$PANGO_H4" "$PANGO_H5")
+      mapfile -t RAW_LINES <<< "$RAW_TEXT"
+      local TOTAL_LINES="${#MARKUP_LINES[@]}"
+      if (( TOTAL_LINES == 0 )); then
+        continue
+      fi
+
+      # estimated rendered lines per source line (a markdown heading is taller)
+      mapfile -t MD_WEIGHTS < <(printf '%s\n' "${RAW_LINES[@]}" | awk -v CPL="$CHARS_PER_LINE" '
+        { w = int((length($0) + CPL - 1) / CPL); if (w < 1) w = 1; if ($0 ~ /^#{1,6} /) w++; print w }')
+
+      local CHUNK_MARKUP CHUNK_PLAIN PART_HEADING
+      local j w acc last PART s e
+      local -a STARTS=()
+      acc=0; last=0
+      for (( j=0; j<TOTAL_LINES; j++ )); do
+        w="${MD_WEIGHTS[j]}"
+        (( w > MAX_LINES_PER_NOTE )) && w=$MAX_LINES_PER_NOTE
+        if (( acc > 0 && acc + w > MAX_LINES_PER_NOTE )); then
+          STARTS+=("$last")
+          last=$j
+          acc=0
+        fi
+        acc=$(( acc + w ))
+      done
+      STARTS+=("$last")
+      local TOTAL_PARTS="${#STARTS[@]}"
+
+      for (( PART=1; PART<=TOTAL_PARTS; PART++ )); do
+        s="${STARTS[PART-1]}"
+        if (( PART < TOTAL_PARTS )); then
+          e=$(( STARTS[PART] - 1 ))
+        else
+          e=$(( TOTAL_LINES - 1 ))
+        fi
+        local -a CHUNK_LINES=("${MARKUP_LINES[@]:s:e-s+1}")
+        CHUNK_MARKUP="$(printf '%s\n' "${CHUNK_LINES[@]}")"
+        CHUNK_MARKUP="${CHUNK_MARKUP%$'\n'}"
+
+        if [[ -z "${CHUNK_MARKUP//[[:space:]]/}" ]]; then
+          continue
+        fi
+
+        if (( PART == 1 )); then
+          PART_HEADING="$RAW_HEADING"
+        else
+          PART_HEADING="${RAW_HEADING} (${PART}/${TOTAL_PARTS})"
+        fi
+
+        CHUNK_PLAIN="$(printf '%s\n' "${RAW_LINES[@]:s:e-s+1}" | fold -s -w "$CHARS_PER_LINE" | fold -w "$CHARS_PER_LINE")"
+        if ! render_md_card "$PART_HEADING" "$CHUNK_MARKUP"; then
+          render_note_card "$PART_HEADING" "$CHUNK_PLAIN"
+        fi
+      done
+      continue
+    fi
+
+    # Plain text: word-wrap to max width, then split into lines so oversized
+    # single files automatically break into multiple cards
+    RAW_TEXT="$(printf '%s\n' "$RAW_TEXT" | fold -s -w "$CHARS_PER_LINE" | fold -w "$CHARS_PER_LINE")"
     mapfile -t BODY_LINES <<< "$RAW_TEXT"
     local TOTAL_LINES="${#BODY_LINES[@]}"
 
