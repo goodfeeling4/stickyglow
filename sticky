@@ -20,12 +20,21 @@ DEFAULT_DESKTOP="$HOME/Desktop"
 if command -v xdg-user-dir >/dev/null 2>&1; then
   DEFAULT_DESKTOP="$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")"
 fi
-NOTES_DIR="${STICKY_NOTES_DIR:-$DEFAULT_DESKTOP/Sticky}"
+NOTES_DIR="${STICKY_NOTES_DIR:-}"
+if [[ -z "$NOTES_DIR" ]]; then
+  if [[ -d "$DEFAULT_DESKTOP/Sticky" ]]; then
+    NOTES_DIR="$DEFAULT_DESKTOP/Sticky"
+  elif [[ -d "$DEFAULT_DESKTOP/sticky" ]]; then
+    NOTES_DIR="$DEFAULT_DESKTOP/sticky"
+  else
+    NOTES_DIR="$DEFAULT_DESKTOP/Sticky"
+  fi
+fi
 
 # Internal asset & log directories
 WALLPAPER_DIR="$REPO_DIR/wallpapers/Slideshow"
 TARGET_DIR="$REPO_DIR/wallpapers/Target"
-LOG_DIR="$REPO_DIR/logs"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/sticky"
 LOG_FILE="$LOG_DIR/sticky.log"
 
 # Service names
@@ -137,8 +146,8 @@ cmd_render() {
   if [[ -d "$NOTES_DIR" ]]; then
     while IFS= read -r -d '' f; do
       local fname="$(basename "$f")"
-      # Skip hidden, backup, swap, or temporary files
-      if [[ "$fname" =~ ^\. || "$fname" =~ ~$ || "$fname" =~ \.(swp|tmp|bak|part)$ ]]; then
+      # Skip hidden, backup, swap, temporary, or conflict files
+      if [[ "$fname" =~ ^\. || "$fname" =~ ~$ || "$fname" =~ \.(swp|tmp|bak|part)$ || "$fname" =~ \.conflict- ]]; then
         continue
       fi
       note_files+=("$f")
@@ -200,15 +209,27 @@ cmd_watch_notes() {
 
   inotifywait -m -e close_write,create,delete,moved_to,moved_from "$NOTES_DIR" --format "%e %f" 2>/dev/null |
   while read -r event file; do
-    # Skip empty names, hidden files, backup/swap/temp files
-    if [[ -z "$file" || "$file" =~ ^\. || "$file" =~ ~$ || "$file" =~ \.(swp|tmp|bak|part)$ ]]; then
+    # Skip empty names, hidden files, backup/swap/temp files, or conflict backups
+    if [[ -z "$file" || "$file" =~ ^\. || "$file" =~ ~$ || "$file" =~ \.(swp|tmp|bak|part)$ || "$file" =~ \.conflict- ]]; then
       continue
     fi
 
     log "Note event ($event): $file"
     
     # Debounce rapid sequential events
-    while read -t 0.3 -r _ _; do :; done
+    while read -t 0.5 -r _ _; do :; done
+
+    # Auto-commit to Git locally if notes dir is a Git repository
+    if [[ -d "$NOTES_DIR/.git" ]]; then
+      (
+        cd "$NOTES_DIR"
+        git add -A
+        if ! git diff --cached --quiet 2>/dev/null; then
+          git commit -m "Note update: $file ($(date '+%Y-%m-%d %H:%M:%S'))" >/dev/null 2>&1 || true
+          log "Auto-committed Git change for: $file"
+        fi
+      ) || true
+    fi
 
     # If currently in sticky mode, update wallpaper immediately
     local current_is_sticky=false
@@ -227,6 +248,8 @@ cmd_watch_notes() {
       log "Notes changed while in Normal mode; buffer rendered quietly."
       cmd_render >/dev/null 2>&1 || true
     fi
+
+
   done
 }
 
@@ -302,6 +325,34 @@ cmd_install() {
   mkdir -p "$TARGET_DIR"
   mkdir -p "$LOG_DIR"
   mkdir -p "$SYSTEMD_USER_DIR"
+
+  # Ensure Notes directory is a Git repository for automatic versioning
+  if [[ ! -d "$NOTES_DIR/.git" ]]; then
+    (
+      cd "$NOTES_DIR"
+      git init >/dev/null 2>&1 || true
+      git config user.name >/dev/null 2>&1 || git config user.name "Sticky Glow"
+      git config user.email >/dev/null 2>&1 || git config user.email "glow@sticky.local"
+    ) || true
+  fi
+
+  # Ensure .gitignore exists in Notes directory
+  if [[ ! -f "$NOTES_DIR/.gitignore" ]]; then
+    cat <<EOF > "$NOTES_DIR/.gitignore"
+*.conflict-*.md
+*.conflict-*
+*.swp
+*.tmp
+*.bak
+*~
+.DS_Store
+EOF
+    (
+      cd "$NOTES_DIR"
+      git add .gitignore >/dev/null 2>&1 || true
+      git commit -m "Initialize Sticky Notes repository" >/dev/null 2>&1 || true
+    ) || true
+  fi
 
   # 3. Stop running instances of our project's services if updating
   systemctl --user stop "$SERVICE_NOTES" "$SERVICE_LOCK" 2>/dev/null || true
@@ -394,12 +445,62 @@ cmd_uninstall() {
   echo "Sticky Notes Wallpaper uninstalled successfully."
 }
 
+cmd_pair() {
+  echo "=================================================="
+  echo "        Sticky Glow - Mobile Pairing Info         "
+  echo "=================================================="
+  echo "User:       $USER"
+  echo "SSH Port:   22"
+  echo "RemoteDir:  $NOTES_DIR"
+  echo ""
+  echo "Available Network IP Addresses:"
+
+  local ips=()
+  if command -v ip >/dev/null 2>&1; then
+    while read -r line; do
+      local iface ip_addr
+      iface="$(echo "$line" | awk '{print $2}')"
+      ip_addr="$(echo "$line" | awk '{print $4}' | cut -d/ -f1)"
+      if [[ "$ip_addr" != 127.* ]]; then
+        ips+=("$ip_addr")
+        echo "  - $ip_addr ($iface)"
+      fi
+    done < <(ip -o -4 addr show)
+  elif command -v hostname >/dev/null 2>&1; then
+    for ip_addr in $(hostname -I); do
+      ips+=("$ip_addr")
+      echo "  - $ip_addr"
+    done
+  fi
+
+  local primary_ip="127.0.0.1"
+  if (( ${#ips[@]} > 0 )); then
+    primary_ip="${ips[0]}"
+  fi
+
+  local pair_uri="stickyglow://pair?name=LinuxLaptop&host=${primary_ip}&port=22&username=${USER}&remoteDir=${NOTES_DIR}"
+  echo ""
+  echo "Quick Pairing URI (Paste into Sticky Glow Android App):"
+  echo "  $pair_uri"
+  echo "=================================================="
+}
+
 cmd_status() {
   echo "=================================================="
   echo "             Sticky Notes Status                  "
   echo "=================================================="
   echo "Repo Directory:  $REPO_DIR"
   echo "Notes Directory: $NOTES_DIR"
+  if [[ -d "$NOTES_DIR" ]]; then
+    local count
+    count="$(find "$NOTES_DIR" -maxdepth 1 -type f ! -name ".*" ! -name "*~" ! -name "*.conflict-*" | wc -l)"
+    echo "Active Notes:    $count"
+  fi
+  if [[ -d "$NOTES_DIR/.git" ]]; then
+    local last_commit
+    last_commit="$(git -C "$NOTES_DIR" log -1 --format="%h - %s (%cr)" 2>/dev/null || echo "No commits yet")"
+    echo "Git Versioning:  $last_commit"
+  fi
   echo ""
   echo "--- Systemd Services ---"
   systemctl --user status "$SERVICE_NOTES" "$SERVICE_LOCK" --no-pager || true
@@ -417,6 +518,8 @@ cmd_status() {
   else
     echo "No log entries yet."
   fi
+  echo ""
+  echo "Tip: Run 'sticky pair' to see mobile connection endpoints."
 }
 
 cmd_help() {
@@ -429,6 +532,7 @@ Commands:
   sticky        Renders sticky notes and applies wallpaper (Sticky mode).
   normal        Applies a clean wallpaper without notes (Normal mode).
   render [img]  Renders notes onto a wallpaper buffer without immediately applying.
+  pair          Displays mobile pairing endpoints and quick setup URI.
   watch-notes   Starts the inotify note directory watcher (daemon).
   watch-lock    Starts the logind lockscreen/sleep watcher (daemon).
   status        Displays live status of services, active wallpaper, and logs.
@@ -456,6 +560,9 @@ case "${1:-help}" in
   render)
     shift
     cmd_render "$@"
+    ;;
+  pair|connect)
+    cmd_pair
     ;;
   watch-notes)
     cmd_watch_notes

@@ -70,6 +70,9 @@ sticky render
 # Check service health and logs
 sticky status
 
+# Show mobile pairing info & one-click setup URI
+sticky pair
+
 # Reinstall or register services and command
 sticky install
 

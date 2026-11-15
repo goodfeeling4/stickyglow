@@ -272,8 +272,36 @@ for i in "${!TXT_FILES[@]}"; do
   RAW_HEADING="${RAW_HEADING^^}"
   RAW_HEADING="$(printf '%s' "$RAW_HEADING" | fold -s -w "$HEAD_CHARS_PER_LINE" | fold -w "$HEAD_CHARS_PER_LINE")"
 
-  # Read body text, strip CR, and word-wrap to max width
-  RAW_TEXT="$(tr -d '\r' < "$FILE" | fold -s -w "$CHARS_PER_LINE" | fold -w "$CHARS_PER_LINE")"
+  # Preprocess Markdown text: format checklists, clean formatting, and strip redundant titles
+  PROCESSED_TEXT=""
+  first_line_checked=false
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    # Check if first non-empty line is a redundant # Heading
+    if [[ "$first_line_checked" == "false" && -n "${line//[[:space:]]/}" ]]; then
+      first_line_checked=true
+      if [[ "$line" =~ ^#[[:space:]]+(.*)$ ]]; then
+        h_text="${BASH_REMATCH[1]}"
+        h_norm="$(echo "$h_text" | tr '[:lower:]' '[:upper:]' | tr -d ' ')"
+        raw_norm="$(echo "${BASENAME%.*}" | tr '_' ' ' | tr '[:lower:]' '[:upper:]' | tr -d ' ')"
+        if [[ "$h_norm" == "$raw_norm" ]]; then
+          continue
+        fi
+      fi
+    fi
+
+    # Format Markdown checklist checkboxes
+    line="${line//- \[ \]/☐}"
+    line="${line//- \[x\]/☑}"
+    line="${line//- \[X\]/☑}"
+    # Clean simple bold/italic markers
+    line="${line//\*\*/}"
+
+    PROCESSED_TEXT+="$line"$'\n'
+  done < "$FILE"
+
+  # Strip trailing newlines and word-wrap to max width
+  RAW_TEXT="$(printf '%s' "$PROCESSED_TEXT" | fold -s -w "$CHARS_PER_LINE" | fold -w "$CHARS_PER_LINE")"
   if [[ -z "${RAW_TEXT//[[:space:]]/}" ]]; then
     continue
   fi
