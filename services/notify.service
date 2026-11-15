@@ -2,9 +2,9 @@
 Description=notify service
 
 [Service]
-ExecStart=/home/shahnebaj/sticky/notify.sh
+ExecStart=__STICKY_DIR__/sticky serve
 Restart=always
 RestartSec=5s
 
 [Install]
-WantedBy=multi-user.target   
+WantedBy=default.target

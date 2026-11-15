@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/home/shahnebaj/sticky/lockscreenWatch.sh
+ExecStart=__STICKY_DIR__/sticky watch-lock
 RemainAfterExit=false
 Restart=always
 RestartSec=0.1s

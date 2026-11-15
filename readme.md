@@ -3,7 +3,7 @@
 Turns your COSMIC wallpaper or any into a live sticky-note board. `.txt` files in `~/Desktop/Sticky` are rendered as glass cards on the wallpaper. On lock/suspend/shutdown/logout the wallpaper switches to a clean one, and back to sticky on login.
 ## main highlight of this tool is :- 
    -  it's fully automatic when you change notes `.txt` file `~/Desktop/Sticky/` after closing write then automatic refresh notes on wallpaper .
-   -  only visible sticky notes after login on poweroff/logout/suspend/lockscreen mean you close session its automatic goes normal walpaper. you can also change mode by ./sticky.sh and ./normal.sh 
+   -  only visible sticky notes after login on poweroff/logout/suspend/lockscreen mean you close session its automatic goes normal walpaper. you can also change mode by `./sticky on` and `./sticky off`
 
 
 
@@ -27,7 +27,7 @@ sudo apt install imagemagick inotify-tools
 
 ## Setup
 
-Scripts use absolute paths under `~/notes` — keep the repo there or fix paths in the scripts.
+No hardcoded paths needed — the script auto-detects the repo location, and `setup` bakes the absolute path into the systemd units (services require full paths everywhere).
 
 1. Add numbered images to `wallpapers/Slideshow/`.
 
@@ -35,36 +35,32 @@ Scripts use absolute paths under `~/notes` — keep the repo there or fix paths 
    ```bash
    mkdir -p ~/Desktop/Sticky
    ```
-   Creates the notes folder the watcher monitors.
+   Creates the notes folder the watcher monitors (setup does this too).
 
 3.
    ```bash
-   mkdir -p ~/.config/systemd/user
-   cp services/*.service ~/.config/systemd/user/
-   systemctl --user daemon-reload
-   systemctl --user enable --now notify.service lockscreen_watcher.service restart_bg.service
+   ./sticky setup
    ```
-   Installs the three user services. Background configs are copied by the scripts at runtime.
+   Renders `services/*.service` from the current directory, writes the absolute path into `ExecStart`, installs them to `~/.config/systemd/user/`, then enables and restarts them. Rerun it whenever you move the repo so the service paths get updated.
 
 ## Usage
 
-No manual steps needed — the watchers do everything.
+Everything goes through one command: `./sticky <command>` (see `./sticky help`).
 
-- **Add/edit a note:** save a `.txt` in `~/Desktop/Sticky`; wallpaper re-renders within a second.
-- **Remove a note:** delete the `.txt`, then touch any remaining file to re-render.
-- **Manual render:**
-  ```bash
-  ./glass_sticky.sh wallpapers/Slideshow/3.jpg ~/Desktop/Sticky/*.txt wallpapers/Target/Sticky.png
-  ./sticky.sh
-  ```
-  Renders notes onto image `3.jpg` and applies it.
-- **Force clean wallpaper:** `./normal.sh`
-- **Watch the log:** `tail -f logs/lock.log`
+- **Add/edit a note:** save a file in `~/Desktop/Sticky`; wallpaper re-renders within a second (`serve` watcher).
+- **Remove a note:** delete the file, then touch any remaining note to re-render.
+- **Render only (no apply):** `./sticky render` — random image; or pick one: `./sticky render wallpapers/Slideshow/3.jpg`
+- **Render + apply in one step:** `./sticky refresh`
+- **Show last rendered sticky image (no render):** `./sticky on`
+- **Clean wallpaper, no notes (no render):** `./sticky off`
+- **Status overview:** `./sticky status`
+- **Watch the log:** `./sticky log`
 
 ## Notes
 
-- Paths are hardcoded to this checkout; edit the scripts if you move things.
-- `notify.sh` reacts to `close_write` events only — save complete files (editors do this); partial/streamed writes are ignored.
+- The script resolves its own directory at runtime (`SCRIPT_DIR`) — the repo can live anywhere.
+- The systemd units get the absolute path baked in by `./sticky setup`; rerun it after moving the repo.
+- `serve` reacts to `close_write` events only — save complete files (editors do this); partial/streamed writes are ignored.
 
 
 
@@ -88,11 +84,11 @@ Two modes for the COSMIC background:
 
 | Service | Trigger | Action |
 |---|---|---|
-| `notify.service` (`notify.sh`) | file saved (`close_write`) in `~/Desktop/Sticky` | Re-render notes onto a new random wallpaper, apply it |
-| `lockscreen_watcher.service` (`lockscreenWatch.sh`) | logind events via `gdbus` | Clean wallpaper on lock/suspend/shutdown/logout; sticky wallpaper on login |
+| `notify.service` (`sticky serve`) | file saved (`close_write`) in `~/Desktop/Sticky` | Re-render notes onto a new random wallpaper, apply it |
+| `lockscreen_watcher.service` (`sticky watch-lock`) | logind events via `gdbus` | Clean wallpaper on lock/suspend/shutdown/logout; last rendered sticky image on login |
 | `restart_bg.service` | runs continuously | Safety net — restarts `cosmic-bg` only if it ever crashes (normal refresh never kills it) |
 
-`notify.sh` and `lockscreenWatch.sh` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/logout switching never blocks note watching.
+`serve` and `watch-lock` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/logout switching never blocks note watching.
 
 ## How the wallpaper refresh works (no restart)
 
@@ -104,13 +100,9 @@ The config is written atomically: `sed` renders the template into a `.atomicwrit
 
 | File | Purpose |
 |---|---|
-| `glass_sticky.sh` | Renderer: `glass_sticky.sh <wallpaper.jpg> <note1.txt> ... [output.png]`. Filename → mint heading, long files split into `(1/N)` cards, cards stack down the right edge. |
-| `notify.sh` | Watches `~/Desktop/Sticky`, re-renders on change. Runs as its own independent service. |
-| `sticky.sh` | Applies sticky-mode config atomically; `cosmic-bg` re-renders the wallpaper live. |
-| `normal.sh` | Applies clean-mode config atomically, stops the sticky renderer; `cosmic-bg` re-renders live. |
-| `lockscreenWatch.sh` | Watches `org.freedesktop.login1`, switches modes. Runs as its own independent service. |
-| `services/` | systemd user units (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`). |
-| `setting_conf/` | COSMIC background configs (`normal`, `sticky`). |
+| `sticky` | The single command: `setup`, `status`, `on`, `off`, `render`, `refresh`, `serve`, `watch-lock`, `log`. Includes the renderer — filename → mint heading, long files split into `(1/N)` cards, cards stack down the right edge. |
+| `services/` | systemd user unit templates (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`) — full paths baked in by `sticky setup`. |
+| `setting_conf/` | COSMIC background config templates (`normal`, `sticky`). |
 | `wallpapers/Slideshow/` | Pool of background images (`0.jpg`, `1.jpg`, ...). |
 | `wallpapers/Target/` | Generated images (`Sticky.png`, `normal.png`). |
 | `logs/lock.log` | Watcher event log. |
