@@ -27,7 +27,7 @@ sudo apt install imagemagick inotify-tools
 
 ## Setup
 
-No hardcoded paths needed — the script auto-detects the repo location, and `setup` bakes the absolute path into the systemd units (services require full paths everywhere).
+No hardcoded paths needed — the script auto-detects the repo location, and `install` bakes the absolute path into the systemd units (services require full paths everywhere).
 
 1. Add numbered images to `wallpapers/Slideshow/`.
 
@@ -39,9 +39,11 @@ No hardcoded paths needed — the script auto-detects the repo location, and `se
 
 3.
    ```bash
-   ./sticky setup
+   ./sticky install
    ```
    Renders `services/*.service` from the current directory, writes the absolute path into `ExecStart`, installs them to `~/.config/systemd/user/`, then enables and restarts them. Rerun it whenever you move the repo so the service paths get updated.
+
+To remove everything again: `./sticky uninstall` — stops and deletes the three services. Notes, wallpapers and the log are kept.
 
 ## Usage
 
@@ -55,11 +57,12 @@ Everything goes through one command: `./sticky <command>` (see `./sticky help`).
 - **Clean wallpaper, no notes (no render):** `./sticky off`
 - **Status overview:** `./sticky status`
 - **Watch the log:** `./sticky log`
+- **Remove the services:** `./sticky uninstall`
 
 ## Notes
 
 - The script resolves its own directory at runtime (`SCRIPT_DIR`) — the repo can live anywhere.
-- The systemd units get the absolute path baked in by `./sticky setup`; rerun it after moving the repo.
+- The systemd units get the absolute path baked in by `./sticky install`; rerun it after moving the repo.
 - `serve` reacts to `close_write` events only — save complete files (editors do this); partial/streamed writes are ignored.
 
 
@@ -100,8 +103,8 @@ The config is written atomically: `sed` renders the template into a `.atomicwrit
 
 | File | Purpose |
 |---|---|
-| `sticky` | The single command: `setup`, `status`, `on`, `off`, `render`, `refresh`, `serve`, `watch-lock`, `log`. Includes the renderer — filename → mint heading, long files split into `(1/N)` cards, cards stack down the right edge. |
-| `services/` | systemd user unit templates (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`) — full paths baked in by `sticky setup`. |
+| `sticky` | The single command: `install`, `uninstall`, `status`, `on`, `off`, `render`, `refresh`, `serve`, `watch-lock`, `log`. Includes the renderer — filename → mint heading, long files split into `(1/N)` cards, cards stack down the right edge. |
+| `services/` | systemd user unit templates (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`) — full paths baked in by `sticky install`. |
 | `setting_conf/` | COSMIC background config templates (`normal`, `sticky`). |
 | `wallpapers/Slideshow/` | Pool of background images (`0.jpg`, `1.jpg`, ...). |
 | `wallpapers/Target/` | Generated images (`Sticky.png`, `normal.png`). |

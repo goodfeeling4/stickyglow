@@ -27,7 +27,8 @@ sticky — one command for everything in this repo
 
 Usage: sticky <command>
 
-  setup        install, enable and restart the three services
+  install      install, enable and restart the three services
+  uninstall    stop and remove the three services (keeps notes and images)
   status       show services, wallpaper config, notes and images
   on           show the last rendered sticky image (no render; renders once if none exists)
   off          show a clean random image, no notes (normal mode)
@@ -390,7 +391,7 @@ render_notes() {
 
 # ------------------------------------------------------------------ commands
 
-cmd_setup() {
+cmd_install() {
   local unit
   mkdir -p "$UNIT_DIR" "$TARGET_DIR" "$SCRIPT_DIR/logs" "$NOTES_DIR"
 
@@ -402,7 +403,23 @@ cmd_setup() {
   systemctl --user daemon-reload
   systemctl --user disable notify.service lockscreen_watcher.service restart_bg.service >/dev/null 2>&1 || true
   systemctl --user enable --now notify.service lockscreen_watcher.service restart_bg.service
-  echo "setup done — services enabled and running"
+  echo "install done — services enabled and running"
+}
+
+cmd_uninstall() {
+  local unit
+  systemctl --user stop notify.service lockscreen_watcher.service restart_bg.service 2>/dev/null || true
+  systemctl --user disable notify.service lockscreen_watcher.service restart_bg.service 2>/dev/null || true
+
+  for unit in $SERVICES; do
+    if [ -f "$UNIT_DIR/$unit" ]; then
+      rm "$UNIT_DIR/$unit"
+      echo "removed $UNIT_DIR/$unit"
+    fi
+  done
+
+  systemctl --user daemon-reload
+  echo "uninstall done — services stopped and removed (notes, wallpapers and log kept)"
 }
 
 cmd_status() {
@@ -525,7 +542,8 @@ cmd_log() {
 # ------------------------------------------------------------------ dispatch
 
 case "${1:-help}" in
-  setup)          cmd_setup ;;
+  install)        cmd_install ;;
+  uninstall)      cmd_uninstall ;;
   status)         cmd_status ;;
   on)             cmd_on ;;
   off)            cmd_off ;;
