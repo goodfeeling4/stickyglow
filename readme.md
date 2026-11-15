@@ -52,7 +52,7 @@ Everything goes through one command: `./sticky <command>` (see `./sticky help`).
 
 - **Add/edit a note:** save a file in `~/Desktop/Sticky` or any of its subdirectories; wallpaper re-renders within a second (`serve` watcher).
 - **Group notes:** put them in a subdirectory (`~/Desktop/Sticky/work/`) — the folder name is prefixed to the card heading.
-- **Markdown notes:** save `.md`/`.markdown` and the card renders like a VS Code markdown preview — headings, **bold**, *italic*, `code`, ~~strikethrough~~, links, bullet/ordered lists, blockquotes, fenced code blocks and `---` rules. Long files still split into `(1/N)` cards.
+- **Markdown notes:** save `.md`/`.markdown`. The card header is the file's own main `#` heading (ATX `# ` or setext `===` title) with a thin divider under it — the filename is not used, and the title is not repeated in the body. Files without a top-level heading render as a plain headerless markdown preview. Everything inside renders like a VS Code preview: ATX/setext headings, **bold**, *italic*, ***both***, ~~strikethrough~~, `inline code`, [links](url) and autolinks, images (as alt text), bullet/ordered/nested lists, `- [x]` task checkboxes, blockquotes (incl. nested), fenced code blocks (``` or ~~~, no inline styling inside), `---` rules and tables (monospace, aligned). Long files still split into `(1/N)` cards, and a title-only file renders as a header-only card. Falls back to plain text if ImageMagick lacks the Pango coder.
 - **Remove a note:** delete the file, then touch any remaining note to re-render.
 - **Render only (no apply):** `./sticky render` — random image; or pick one: `./sticky render wallpapers/Slideshow/3.jpg`
 - **Render + apply in one step:** `./sticky refresh`
@@ -106,7 +106,7 @@ The config is written atomically: `sed` renders the template into a `.atomicwrit
 
 | File | Purpose |
 |---|---|
-| `sticky` | The single command: `install`, `uninstall`, `status`, `on`, `off`, `render`, `refresh`, `serve`, `watch-lock`, `log`. Includes the renderer — filename → mint heading, `.md` → markdown preview (via the Pango coder), long files split into `(1/N)` cards, cards stack down the right edge. |
+| `sticky` | The single command: `install`, `uninstall`, `status`, `on`, `off`, `render`, `refresh`, `serve`, `watch-lock`, `log`. Includes the renderer — `.md` cards use the file's own `#` heading as the card title (headerless when there is none), `.txt` cards use the filename, long files split into `(1/N)` cards, cards stack down the right edge. |
 | `services/` | systemd user unit templates (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`) — full paths baked in by `sticky install`. |
 | `setting_conf/` | COSMIC background config templates (`normal`, `sticky`). |
 | `wallpapers/Slideshow/` | Pool of background images (`0.jpg`, `1.jpg`, ...). |

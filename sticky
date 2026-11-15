@@ -108,60 +108,99 @@ md_to_pango() {
   # stdin: raw markdown text; stdout: pango markup, one line per source line.
   # Sizes are pango absolute sizes (1024ths of a point) passed in as args:
   # md_to_pango <base> <h1> <h2> <h3> <h4> <h5>
-  local base="$1" h1="$2" h2="$3" h3="$4" h4="$5" h5="$6"
+  # Colors are tuned for the dark glass card: off-white base (set by the
+  # caller's wrapper span), mint headings, light grays for quotes/rules.
+  local base="$1" h1="$2" h2="$3" h4="$4" h3="$5" h5="$6"
   awk -v BASE="$base" -v H1="$h1" -v H2="$h2" -v H3="$h3" -v H4="$h4" -v H5="$h5" '
-    BEGIN { code = 0 }
-    /^[ \t]*(```|~~~)/ { code = !code; print ""; next }
-    {
-      line = $0
-      gsub(/\t/, "    ", line)
+    function esc(s) {
       # XML-escape content (doubled: the pango coder decodes entities once
-      # before pango parses the markup, so &amp;lt; must arrive as &amp;amp;lt;)
-      gsub(/&/, "\\&amp;amp;", line)
-      gsub(/</, "\\&amp;lt;", line)
-      gsub(/>/, "\\&amp;gt;", line)
+      # before pango parses the markup, so < must arrive as &amp;amp;lt;)
+      gsub(/\t/, "    ", s)
+      gsub(/&/, "\\&amp;amp;", s)
+      gsub(/</, "\\&amp;lt;", s)
+      gsub(/>/, "\\&amp;gt;", s)
+      return s
+    }
+    { L[NR] = $0 }
+    END {
+      n = NR
+      code = 0
+      for (i = 1; i <= n; i++) {
+        line = L[i]
 
-      if (code) {
-        print "<tt>" line "</tt>"
-        next
+        if (line ~ /^[ \t]*(```|~~~)/) { code = !code; print ""; continue }
+
+        # setext headings: text underlined by a row of = (h1) or - (h2)
+        if (!code && line !~ /^[ \t]*$/ && i < n) {
+          nxt = L[i + 1]
+          if (nxt ~ /^ ?=+[ \t]*$/ || nxt ~ /^ ?-+[ \t]*$/) {
+            size = (nxt ~ /=/) ? H1 : H2
+            print "<span size=\"" size "\" weight=\"bold\" foreground=\"#5dd684\">" esc(line) "</span>"
+            i++
+            continue
+          }
+        }
+
+        e = esc(line)
+
+        # fenced code: \x01 marker keeps sed from styling inline md in code
+        if (code) {
+          print "\x01<tt>" e "</tt>"
+          continue
+        }
+
+        if (match(e, /^#{1,6} /)) {
+          lvl = RLENGTH - 1
+          text = substr(e, RLENGTH + 1)
+          sub(/ +#+$/, "", text)
+          size = (lvl == 1 ? H1 : lvl == 2 ? H2 : lvl == 3 ? H3 : lvl == 4 ? H4 : lvl == 5 ? H5 : BASE)
+          print "<span size=\"" size "\" weight=\"bold\" foreground=\"#5dd684\">" text "</span>"
+          continue
+        }
+
+        if (e ~ /^ ?(---+|\*\*\*+|___+) ?$/) {
+          print "<span foreground=\"#9aa7b4\">────────────────</span>"
+          continue
+        }
+
+        if (match(e, /^( ?&amp;gt;)+ ?/)) {
+          print "<i><span foreground=\"#b7c3cf\">" substr(e, RLENGTH + 1) "</span></i>"
+          continue
+        }
+
+        if (match(e, /^[ \t]*[-*+] /)) {
+          indent = substr(e, 1, RLENGTH - 2)
+          e = indent "&#8226; " substr(e, RLENGTH + 1)
+          # task list: - [ ] / - [x] -> checkbox glyphs
+          if (match(e, /\[( |x|X)\] /)) {
+            tick = substr(e, RSTART + 1, 1)
+            box = (tick == " ") ? "☐" : "☑"
+            e = substr(e, 1, RSTART - 1) box " " substr(e, RSTART + RLENGTH)
+          }
+        }
+
+        # tables render in monospace so pipe columns line up
+        if (e ~ /^[ \t]*\|.*\|[ \t]*$/) {
+          print "<tt>" e "</tt>"
+          continue
+        }
+
+        print e
       }
-
-      if (match(line, /^#{1,6} /)) {
-        lvl = RLENGTH - 1
-        text = substr(line, RLENGTH + 1)
-        sub(/ +#+$/, "", text)
-        size = (lvl == 1 ? H1 : lvl == 2 ? H2 : lvl == 3 ? H3 : lvl == 4 ? H4 : lvl == 5 ? H5 : BASE)
-        print "<span size=\"" size "\" weight=\"bold\">" text "</span>"
-        next
-      }
-
-      if (line ~ /^ ?(-{3,}|\*{3,}|_{3,}) ?$/) {
-        print "<span foreground=\"#66727f\">────────────────</span>"
-        next
-      }
-
-      if (match(line, /^( ?&amp;gt;)+ ?/)) {
-        print "<i><span foreground=\"#8d99a6\">" substr(line, RLENGTH + 1) "</span></i>"
-        next
-      }
-
-      if (match(line, /^[ \t]*[-*+] /)) {
-        indent = substr(line, 1, RLENGTH - 2)
-        line = indent "&#8226; " substr(line, RLENGTH + 1)
-      }
-
-      print line
     }
   ' | sed -E \
-      -e 's|!\[([^]]*)\]\(([^)]*)\)|<i>\1</i>|g' \
-      -e 's|&amp;lt;(https?://[^ ]*)&amp;gt;|<u><span foreground="#7ec8ff">\1</span></u>|g' \
-      -e 's|\[([^]]+)\]\(([^)]*)\)|<u><span foreground="#7ec8ff">\1</span></u>|g' \
-      -e 's|`([^`]*)`|<tt>\1</tt>|g' \
-      -e 's|\*\*\*([^*]+)\*\*\*|<b><i>\1</i></b>|g' \
-      -e 's|\*\*([^*]+)\*\*|<b>\1</b>|g' \
-      -e 's|\*([^*\n]+)\*|<i>\1</i>|g' \
-      -e 's|~~([^~]+)~~|<s>\1</s>|g' \
-      -e 's@(^|[[:space:]])_([^_]+)_([[:space:][:punct:]]|$)@\1<i>\2</i>\3@g' \
+      -e '/^\x01/!{
+s|!\[([^]]*)\]\(([^)]*)\)|<i>\1</i>|g
+s|&amp;lt;(https?://[^ ]*)&amp;gt;|<u><span foreground="#8fd0ff">\1</span></u>|g
+s|\[([^]]+)\]\(([^)]*)\)|<u><span foreground="#8fd0ff">\1</span></u>|g
+s|`([^`]*)`|<tt>\1</tt>|g
+s|\*\*\*([^*]+)\*\*\*|<b><i>\1</i></b>|g
+s|\*\*([^*]+)\*\*|<b>\1</b>|g
+s|\*([^*\n]+)\*|<i>\1</i>|g
+s|~~([^~]+)~~|<s>\1</s>|g
+s@(^|[[:space:]])_([^_]+)_([[:space:][:punct:]]|$)@\1<i>\2</i>\3@g
+}' \
+      -e 's|^\x01||' \
       -e 's|%|%%|g' \
       -e 's|\\|\\\\|g'
 }
@@ -192,8 +231,9 @@ render_md_card() {
   local raw_heading="$1"
   local markup="$2"
 
-  # match the plain-text cards' look (IM default resolves to italic sans)
-  markup="<span font=\"Sans Italic\">${markup}</span>"
+  # match the plain-text cards' look and use a bright off-white fill so text
+  # stays readable on the dark glass over light wallpapers
+  markup="<span font=\"Sans Italic\" foreground=\"#e6ebf2\">${markup}</span>"
 
   if ! "${IM[@]}" -background none -density 72 -size "${MAX_TEXT_W}x" -pointsize "$FONT_SIZE" \
       "pango:${markup}" "$TMP_DIR/md_text.png" 2>/dev/null; then
@@ -212,7 +252,8 @@ render_md_card() {
 
 render_card() {
   # assembles one glass card around an already-rendered body image:
-  # $1 = heading text, $2 = body png path, $3 = body width, $4 = body height
+  # $1 = heading text ("" = no header field and no divider line)
+  # $2 = body png path, $3 = body width, $4 = body height
   local raw_heading="$1"
   local body_png="$2"
   local body_w="$3"
@@ -221,17 +262,20 @@ render_card() {
   local heading_text="${raw_heading//%/%%}"
   heading_text="${heading_text//\\/\\\\}"
   local canvas_h=$(( IMG_H * 2 ))
+  local HEAD_W=0 HEAD_H=0
 
   # 1. Render mint-green bold heading (#5dd684) and trim to exact bounds
-  "${IM[@]}" -size "${IMG_W}x${canvas_h}" xc:none \
-    -gravity northwest \
-    -weight Bold \
-    -fill "rgba(0,0,0,0.65)" -pointsize "$HEADING_FONT_SIZE" -annotate +1+1 "$heading_text" \
-    -fill "#5dd684" -pointsize "$HEADING_FONT_SIZE" -annotate +0+0 "$heading_text" \
-    -trim +repage \
-    "$TMP_DIR/heading.png"
+  if [[ -n "$heading_text" ]]; then
+    "${IM[@]}" -size "${IMG_W}x${canvas_h}" xc:none \
+      -gravity northwest \
+      -weight Bold \
+      -fill "rgba(0,0,0,0.65)" -pointsize "$HEADING_FONT_SIZE" -annotate +1+1 "$heading_text" \
+      -fill "#5dd684" -pointsize "$HEADING_FONT_SIZE" -annotate +0+0 "$heading_text" \
+      -trim +repage \
+      "$TMP_DIR/heading.png"
 
-  read -r HEAD_W HEAD_H < <(get_dims "$TMP_DIR/heading.png")
+    read -r HEAD_W HEAD_H < <(get_dims "$TMP_DIR/heading.png")
+  fi
 
   # 3. Card width adapts to the widest of heading / body
   local content_w="$body_w"
@@ -239,8 +283,14 @@ render_card() {
     content_w="$HEAD_W"
   fi
 
-  local divider_y=$(( HEAD_PAD_Y + HEAD_H + HEAD_PAD_Y ))
-  local body_y=$(( divider_y + 1 + TEXT_PAD ))
+  local divider_y body_y
+  if [[ -n "$heading_text" ]]; then
+    divider_y=$(( HEAD_PAD_Y + HEAD_H + HEAD_PAD_Y ))
+    body_y=$(( divider_y + 1 + TEXT_PAD ))
+  else
+    divider_y=0
+    body_y="$TEXT_PAD"
+  fi
 
   local note_w=$(( content_w + TEXT_PAD * 2 ))
   local note_h=$(( body_y + body_h + TEXT_PAD ))
@@ -304,20 +354,31 @@ render_card() {
     -alpha set -compose DstIn -composite \
     "$TMP_DIR/glass_card.png"
 
-  # 7. Draw subtle outer border and 1px divider line between heading and notes
+  # 7. Draw subtle outer border and, when there is a header, the 1px divider line
   "${IM[@]}" "$TMP_DIR/glass_card.png" \
     -fill none \
-    -stroke "rgba(255,255,255,0.16)" -strokewidth 1 \
-    -draw "line 1,${divider_y} $((note_w-2)),${divider_y}" \
     -stroke "rgba(255,255,255,0.14)" -strokewidth 1 \
     -draw "roundrectangle 0,0 $((note_w-1)),$((note_h-1)) ${RADIUS},${RADIUS}" \
     "$TMP_DIR/glass_bordered.png"
+  if [[ -n "$heading_text" ]]; then
+    "${IM[@]}" "$TMP_DIR/glass_bordered.png" \
+      -fill none \
+      -stroke "rgba(255,255,255,0.16)" -strokewidth 1 \
+      -draw "line 1,${divider_y} $((note_w-2)),${divider_y}" \
+      "$TMP_DIR/glass_bordered.png"
+  fi
 
   # 8. Composite heading and body content onto the dark glass block
-  "${IM[@]}" "$TMP_DIR/glass_bordered.png" \
-    "$TMP_DIR/heading.png" -gravity northwest -geometry "+${TEXT_PAD}+${HEAD_PAD_Y}" -compose Over -composite \
-    "$body_png" -gravity northwest -geometry "+${TEXT_PAD}+${body_y}" -compose Over -composite \
-    "$TMP_DIR/final_card.png"
+  if [[ -n "$heading_text" ]]; then
+    "${IM[@]}" "$TMP_DIR/glass_bordered.png" \
+      "$TMP_DIR/heading.png" -gravity northwest -geometry "+${TEXT_PAD}+${HEAD_PAD_Y}" -compose Over -composite \
+      "$body_png" -gravity northwest -geometry "+${TEXT_PAD}+${body_y}" -compose Over -composite \
+      "$TMP_DIR/final_card.png"
+  else
+    "${IM[@]}" "$TMP_DIR/glass_bordered.png" \
+      "$body_png" -gravity northwest -geometry "+${TEXT_PAD}+${body_y}" -compose Over -composite \
+      "$TMP_DIR/final_card.png"
+  fi
 
   # Format geometry with explicit signs (+X+Y or -X-Y) to avoid "+-5" syntax errors
   local shadow_geom card_geom
@@ -491,10 +552,72 @@ render_notes() {
     EXT="${EXT,,}"
 
     if [[ "$EXT" == md || "$EXT" == markdown ]] && (( PANGO_OK )); then
-      # Markdown: convert to pango markup once; pango wraps long lines, so
-      # cards are split by estimated rendered height, not source line count
-      mapfile -t MARKUP_LINES < <(printf '%s\n' "$RAW_TEXT" | md_to_pango "$PANGO_BASE" "$PANGO_H1" "$PANGO_H2" "$PANGO_H3" "$PANGO_H4" "$PANGO_H5")
+      # Markdown: the card header is the document's own main H1 (ATX `# ` or
+      # setext underlined) taken from the top of the file; it is removed from
+      # the body so it never renders twice. Without one, the card has no
+      # header and no divider line — just the literal markdown preview.
       mapfile -t RAW_LINES <<< "$RAW_TEXT"
+
+      local MD_HEADING="" k L fence=0 DROP_START=-1 DROP_END=-1
+      local FENCE_RE='^[ \t]*(```|~~~)'
+      local SETEXT_H1_RE='^ ?=+[ \t]*$'
+      for k in "${!RAW_LINES[@]}"; do
+        L="${RAW_LINES[k]}"
+        if (( fence )); then
+          [[ "$L" =~ $FENCE_RE ]] && fence=0
+          continue
+        fi
+        if [[ "$L" =~ $FENCE_RE ]]; then
+          fence=1
+          continue
+        fi
+        if [[ -z "${L//[[:space:]]/}" ]]; then
+          continue
+        fi
+        if [[ "$L" =~ ^#[[:space:]] ]]; then
+          MD_HEADING="$(printf '%s' "$L" | sed -E 's/^# *//; s/ +#+$//')"
+          DROP_START=$k
+          DROP_END=$k
+        elif (( k + 1 < ${#RAW_LINES[@]} )) && [[ "${RAW_LINES[k+1]}" =~ $SETEXT_H1_RE ]]; then
+          MD_HEADING="$(printf '%s' "$L" | sed -E 's/ +#+$//')"
+          DROP_START=$k
+          DROP_END=$((k + 1))
+        fi
+        break
+      done
+
+      # strip inline markdown markers from the card heading, keep author casing
+      if [[ -n "$MD_HEADING" ]]; then
+        MD_HEADING="$(printf '%s' "$MD_HEADING" | sed -E \
+          -e 's/!\[([^]]*)\]\(([^)]*)\)/\1/g' \
+          -e 's/\[([^]]+)\]\(([^)]*)\)/\1/g' \
+          -e 's/[`*~]//g')"
+        MD_HEADING="$(printf '%s' "$MD_HEADING" | fold -s -w "$HEAD_CHARS_PER_LINE" | fold -w "$HEAD_CHARS_PER_LINE")"
+      fi
+
+      # drop the heading (and setext underline) from the rendered body
+      if (( DROP_START >= 0 )); then
+        local -a KEPT=() k2
+        for k2 in "${!RAW_LINES[@]}"; do
+          (( k2 >= DROP_START && k2 <= DROP_END )) || KEPT+=("${RAW_LINES[k2]}")
+        done
+        RAW_LINES=("${KEPT[@]}")
+      fi
+
+      # heading-only note: render a card with just the title, no body
+      local BODY_CONTENT=0
+      for k in "${!RAW_LINES[@]}"; do
+        [[ -n "${RAW_LINES[k]//[[:space:]]/}" ]] && BODY_CONTENT=1 && break
+      done
+      if (( BODY_CONTENT == 0 )); then
+        "${IM[@]}" -background none -size 1x2 xc:none "$TMP_DIR/empty_body.png"
+        render_card "$MD_HEADING" "$TMP_DIR/empty_body.png" 1 2
+        continue
+      fi
+
+      # convert to pango markup once; pango wraps long lines, so cards are
+      # split by estimated rendered height, not source line count
+      mapfile -t MARKUP_LINES < <(printf '%s\n' "${RAW_LINES[@]}" | md_to_pango "$PANGO_BASE" "$PANGO_H1" "$PANGO_H2" "$PANGO_H3" "$PANGO_H4" "$PANGO_H5")
       local TOTAL_LINES="${#MARKUP_LINES[@]}"
       if (( TOTAL_LINES == 0 )); then
         continue
@@ -537,9 +660,11 @@ render_notes() {
         fi
 
         if (( PART == 1 )); then
-          PART_HEADING="$RAW_HEADING"
+          PART_HEADING="$MD_HEADING"
+        elif [[ -n "$MD_HEADING" ]]; then
+          PART_HEADING="$MD_HEADING (${PART}/${TOTAL_PARTS})"
         else
-          PART_HEADING="${RAW_HEADING} (${PART}/${TOTAL_PARTS})"
+          PART_HEADING="(${PART}/${TOTAL_PARTS})"
         fi
 
         CHUNK_PLAIN="$(printf '%s\n' "${RAW_LINES[@]:s:e-s+1}" | fold -s -w "$CHARS_PER_LINE" | fold -w "$CHARS_PER_LINE")"
