@@ -17,7 +17,7 @@ TARGET_DIR="$SCRIPT_DIR/wallpapers/Target"
 STICKY_IMG="$TARGET_DIR/Sticky.png"
 NORMAL_IMG="$TARGET_DIR/normal.png"
 
-SERVICES="notify.service lockscreen_watcher.service restart_bg.service"
+SERVICES="notify.service lockscreen_watcher.service session_state.service"
 
 # ------------------------------------------------------------------ helpers
 
@@ -35,7 +35,7 @@ Usage: sticky <command>
   render       render notes only: sticky render [image] [output.png]
   refresh      render notes + apply in one step
   serve        watch ~/Desktop/Sticky (and subdirs) and refresh on save   (service)
-  watch-lock   watch lock/sleep/login and switch on/off    (service)
+  watch-lock   watch lock/sleep/shutdown and switch off    (service)
   log          follow the event log
   help         show this help
 EOF
@@ -726,15 +726,15 @@ cmd_install() {
   done
 
   systemctl --user daemon-reload
-  systemctl --user disable notify.service lockscreen_watcher.service restart_bg.service >/dev/null 2>&1 || true
-  systemctl --user enable --now notify.service lockscreen_watcher.service restart_bg.service
+  systemctl --user disable $SERVICES >/dev/null 2>&1 || true
+  systemctl --user enable --now $SERVICES
   echo "install done — services enabled and running"
 }
 
 cmd_uninstall() {
   local unit
-  systemctl --user stop notify.service lockscreen_watcher.service restart_bg.service 2>/dev/null || true
-  systemctl --user disable notify.service lockscreen_watcher.service restart_bg.service 2>/dev/null || true
+  systemctl --user stop $SERVICES 2>/dev/null || true
+  systemctl --user disable $SERVICES 2>/dev/null || true
 
   for unit in $SERVICES; do
     if [ -f "$UNIT_DIR/$unit" ]; then
@@ -836,31 +836,26 @@ cmd_serve() {
 }
 
 cmd_watch_lock() {
-  # lock/suspend/shutdown/logout -> off, login -> on (apply last render only)
+  # only events while logged in: lock/suspend/shutdown -> off.
+  # login and logout are handled by session_state.service (ExecStart/ExecStopPost),
+  # not here — this user service is killed at logout, so it could never react.
+  # note: gdbus monitor prints "interface member (args)", space separated, no dot,
+  # and variants as "(b true,)".
   echo "sticky: watching org.freedesktop.login1 events"
   gdbus monitor --system --dest org.freedesktop.login1 |
   while read -r line; do
-    log_line "iterate"
     case "$line" in
-      *"org.freedesktop.login1.Session.Lock"*)
-        log_line "Screen Locked"
+      *"org.freedesktop.login1.Session Lock"*)
+        log_line "watch-lock: screen locked"
         cmd_off
         ;;
-      *"org.freedesktop.login1.Manager.PrepareForSleep (true,)"*)
-        log_line "suspended"
+      *"org.freedesktop.login1.Manager PrepareForSleep (b true,)"*)
+        log_line "watch-lock: suspended"
         cmd_off
         ;;
-      *"org.freedesktop.login1.Manager.PrepareForShutdownWithMetadata"*)
-        log_line "shutdown or restart"
+      *"org.freedesktop.login1.Manager PrepareForShutdown"*)
+        log_line "watch-lock: shutdown or restart"
         cmd_off
-        ;;
-      *"org.freedesktop.login1.Manager.UserNew"*)
-        log_line "logout"
-        cmd_off
-        ;;
-      *"org.freedesktop.login1.Manager.UserRemoved"*)
-        log_line "login"
-        cmd_on
         ;;
     esac
   done

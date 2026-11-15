@@ -44,7 +44,7 @@ No hardcoded paths needed — the script auto-detects the repo location, and `in
    ```
    Renders `services/*.service` from the current directory, writes the absolute path into `ExecStart`, installs them to `~/.config/systemd/user/`, then enables and restarts them. Rerun it whenever you move the repo so the service paths get updated.
 
-To remove everything again: `./sticky uninstall` — stops and deletes the three services. Notes, wallpapers and the log are kept.
+To remove everything again: `./sticky uninstall` — stops and deletes the four services. Notes, wallpapers and the log are kept.
 
 ## Usage
 
@@ -91,23 +91,23 @@ Two modes for the COSMIC background:
 | Service | Trigger | Action |
 |---|---|---|
 | `notify.service` (`sticky serve`) | file saved (`close_write`) in `~/Desktop/Sticky` or its subdirectories | Re-render notes onto a new random wallpaper, apply it |
-| `lockscreen_watcher.service` (`sticky watch-lock`) | logind events via `gdbus` | Clean wallpaper on lock/suspend/shutdown/logout; last rendered sticky image on login |
-| `restart_bg.service` | runs continuously | Safety net — restarts `cosmic-bg` only if it ever crashes (normal refresh never kills it) |
+| `session_state.service` | started with `graphical-session.target`, stopped at logout | Last rendered sticky image on login (`ExecStart`), clean wallpaper on logout (`ExecStopPost`) |
+| `lockscreen_watcher.service` (`sticky watch-lock`) | logind events via `gdbus` while logged in | Clean wallpaper on lock, suspend and shutdown/reboot |
 
-`serve` and `watch-lock` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/logout switching never blocks note watching.
+Login and logout are detected by systemd itself (`session_state.service` starts and stops with the graphical session), so they work even though the other services are killed with the session at logout. `serve` and `watch-lock` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/suspend/shutdown switching never blocks note watching.
 
 ## How the wallpaper refresh works (no restart)
 
 `cosmic-bg` watches `~/.config/cosmic/com.system76.CosmicBackground/v1/all` with inotify and re-renders on any config change — but it ignores a write whose parsed content is unchanged, which would freeze note edits (same config, new PNG). So the scripts flip `rotation_frequency` between `300` and `301` on every apply. The value is meaningless for single-image sources, but the difference forces `cosmic-bg` to reload and crossfade to the freshly rendered PNG.
 
-The config is written atomically: `sed` renders the template into a `.atomicwrite-*` temp file inside the config dir, then `mv` swaps it into place — mirroring how COSMIC itself writes configs, so the watcher fires exactly once with complete content. `cosmic-bg` is never killed; `restart_bg.service` only rescues it if it crashes.
+The config is written atomically: `sed` renders the template into a `.atomicwrite-*` temp file inside the config dir, then `mv` swaps it into place — mirroring how COSMIC itself writes configs, so the watcher fires exactly once with complete content. `cosmic-bg` is never killed — sticky only edits its config file, and `cosmic-bg` itself is started and owned by the COSMIC session.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `sticky` | The single command: `install`, `uninstall`, `status`, `on`, `off`, `render`, `refresh`, `serve`, `watch-lock`, `log`. Includes the renderer — `.md` cards use the file's own `#` heading as the card title (headerless when there is none), `.txt` cards use the filename, long files split into `(1/N)` cards, cards stack down the right edge. |
-| `services/` | systemd user unit templates (`notify.service`, `lockscreen_watcher.service`, `restart_bg.service`) — full paths baked in by `sticky install`. |
+| `services/` | systemd user unit templates (`notify.service`, `session_state.service`, `lockscreen_watcher.service`) — full paths baked in by `sticky install`. |
 | `setting_conf/` | COSMIC background config templates (`normal`, `sticky`). |
 | `wallpapers/Slideshow/` | Pool of background images (`0.jpg`, `1.jpg`, ...). |
 | `wallpapers/Target/` | Generated images (`Sticky.png`, `normal.png`). |

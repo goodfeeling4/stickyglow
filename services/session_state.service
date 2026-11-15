@@ -1,0 +1,12 @@
+[Unit]
+Description=sticky on at login, off at logout
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=__STICKY_DIR__/sticky on
+ExecStopPost=__STICKY_DIR__/sticky off
+
+[Install]
+WantedBy=graphical-session.target
