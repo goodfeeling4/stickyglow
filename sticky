@@ -917,21 +917,23 @@ cmd_watch_lock() {
   # only events while logged in: lock/suspend/shutdown -> off.
   # login and logout are handled by session_state.service (ExecStart/ExecStopPost),
   # not here — this user service is killed at logout, so it could never react.
-  # note: gdbus monitor prints "interface member (args)", space separated, no dot,
-  # and variants as "(b true,)".
+  # note: gdbus monitor prints "interface.member (args)" — interface and member
+  # joined by a dot — and variants as "(b true,)" (older gdbus used a space;
+  # both formats are matched). "true" is matched on sleep/shutdown so a
+  # cancelled shutdown or resume never triggers "off".
   echo "sticky: watching org.freedesktop.login1 events"
   gdbus monitor --system --dest org.freedesktop.login1 |
   while read -r line; do
     case "$line" in
-      *"org.freedesktop.login1.Session Lock"*)
+      *"org.freedesktop.login1.Session.Lock"* | *"org.freedesktop.login1.Session Lock"*)
         log_line "watch-lock: screen locked"
         cmd_off
         ;;
-      *"org.freedesktop.login1.Manager PrepareForSleep (b true,)"*)
+      *"org.freedesktop.login1.Manager.PrepareForSleep"*true* | *"org.freedesktop.login1.Manager PrepareForSleep"*true*)
         log_line "watch-lock: suspended"
         cmd_off
         ;;
-      *"org.freedesktop.login1.Manager PrepareForShutdown"*)
+      *"org.freedesktop.login1.Manager.PrepareForShutdown"*true* | *"org.freedesktop.login1.Manager PrepareForShutdown"*true*)
         log_line "watch-lock: shutdown or restart"
         cmd_off
         ;;
