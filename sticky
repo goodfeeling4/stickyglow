@@ -15,7 +15,7 @@ NOTES_DIR="$HOME/Desktop/Sticky"
 SLIDESHOW_DIR="$SCRIPT_DIR/wallpapers/Slideshow"
 TARGET_DIR="$SCRIPT_DIR/wallpapers/Target"
 STICKY_IMG="$TARGET_DIR/Sticky.png"
-NORMAL_IMG="$TARGET_DIR/normal.png"
+NOTES_IMG="$TARGET_DIR/notes.png"
 RENDER_PID_FILE="$TARGET_DIR/.render.pid"
 
 SERVICES="notify.service lockscreen_watcher.service session_state.service"
@@ -45,7 +45,26 @@ EOF
 
 log_line() {
   mkdir -p "$SCRIPT_DIR/logs"
-  echo "$1" >> "$LOG"
+  echo "$(date '+%F %T') $1" >> "$LOG"
+}
+
+real_session_active() {
+  # true when logind reports an active non-greeter session for this user.
+  # The greeter runs as this user too (same $HOME and cosmic config), so
+  # without this check `sticky on` at boot would put the notes on the
+  # login screen. Fails open when loginctl itself is unusable so manual
+  # `sticky on` keeps working.
+  local sid class state seen=0
+  while read -r sid _; do
+    [ -n "$sid" ] || continue
+    seen=1
+    state=$(loginctl show-session "$sid" -p State --value 2>/dev/null)
+    [ "$state" = "active" ] || continue
+    class=$(loginctl show-session "$sid" -p Class --value 2>/dev/null)
+    [ "$class" = "user" ] && return 0
+  done < <(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}')
+  [ "$seen" -eq 0 ] && return 0
+  return 1
 }
 
 random_image() {
@@ -92,6 +111,17 @@ apply_config() {
       -e "s/^\( *rotation_frequency: \)[0-9]*,\$/\1${new},/" \
       "$SCRIPT_DIR/setting_conf/$name" > "$COSMIC_DIR/.atomicwrite-$name.tmp"
   mv "$COSMIC_DIR/.atomicwrite-$name.tmp" "$COSMIC_CONF"
+}
+
+swap_wallpaper() {
+  # atomically replace the CONTENT of the wallpaper image the config always
+  # points at (Target/Sticky.png). The greeter daemon keeps its own copy of
+  # the config's source path (captured at login), so switching the source
+  # line never changes what the login screen shows — switching the file's
+  # content does, no matter when the greeter reads it.
+  local src="$1" tmp="$TARGET_DIR/.swap-wallpaper-$$.png"
+  cp "$src" "$tmp" || return 1
+  mv "$tmp" "$STICKY_IMG"
 }
 
 # ------------------------------------------------- render job control (serve)
@@ -459,7 +489,7 @@ render_notes() {
     return 1
   fi
 
-  OUTPUT_IMG="$TARGET_DIR/Sticky.png"
+  OUTPUT_IMG="$NOTES_IMG"
   TXT_FILES=()
 
   local arg
@@ -832,27 +862,39 @@ cmd_status() {
 }
 
 cmd_on() {
-  # apply the last rendered sticky image — never re-renders
-  if [ ! -f "$STICKY_IMG" ]; then
-    echo "sticky: no rendered image yet at $STICKY_IMG, rendering first"
-    cmd_refresh
-    return
+  # swap the last rendered notes in — never re-renders (renders once if none)
+  # guard: only apply when a real user session is active, never on the
+  # greeter's own graphical-session start
+  if ! real_session_active; then
+    log_line "on: greeter only, no active user session — skipped"
+    return 0
   fi
+  if [ ! -f "$NOTES_IMG" ]; then
+    echo "sticky: no rendered notes yet at $NOTES_IMG, rendering first"
+    collect_notes
+    if (( ${#NOTES[@]} == 0 )); then
+      echo "Error: no note files found in $NOTES_DIR" >&2
+      return 1
+    fi
+    local img
+    img=$(random_image) || return 1
+    render_notes "$img" "${NOTES[@]}" "$NOTES_IMG" || return 1
+  fi
+  swap_wallpaper "$NOTES_IMG" || return 1
   apply_config sticky
 }
 
 cmd_off() {
-  # point the wallpaper at a clean random image — no notes rendered
+  # swap in a clean random image — no notes (normal mode)
   local img
   img=$(random_image) || return 1
-  mkdir -p "$TARGET_DIR"
-  cp "$img" "$NORMAL_IMG" || return 1
+  swap_wallpaper "$img" || return 1
   apply_config normal
 }
 
 cmd_render() {
   # render notes only, no apply: render [image] [output.png]
-  local img="${1:-}" out="${2:-$STICKY_IMG}"
+  local img="${1:-}" out="${2:-$NOTES_IMG}"
   if [ -z "$img" ]; then
     img=$(random_image) || return 1
   elif [ ! -f "$img" ]; then
@@ -877,7 +919,8 @@ cmd_refresh() {
     return 1
   fi
   echo "sticky: rendering notes onto $(basename "$img")"
-  render_notes "$img" "${NOTES[@]}" "$STICKY_IMG" || return 1
+  render_notes "$img" "${NOTES[@]}" "$NOTES_IMG" || return 1
+  swap_wallpaper "$NOTES_IMG" || return 1
   apply_config sticky
 }
 

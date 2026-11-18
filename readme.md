@@ -95,11 +95,17 @@ Two modes for the COSMIC background:
 | `session_state.service` | started with `graphical-session.target`, stopped at logout | Last rendered sticky image on login (`ExecStart`), clean wallpaper on logout (`ExecStopPost`) |
 | `lockscreen_watcher.service` (`sticky watch-lock`) | logind events via `gdbus` while logged in | Clean wallpaper on lock, suspend and shutdown/reboot |
 
-Login and logout are detected by systemd itself (`session_state.service` starts and stops with the graphical session), so they work even though the other services are killed with the session at logout. `serve` and `watch-lock` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/suspend/shutdown switching never blocks note watching.
+Login and logout are detected by systemd itself (`session_state.service` starts and stops with the graphical session), so they work even though the other services are killed with the session at logout; shutdown/reboot are covered both by the watcher (`PrepareForShutdown`) and by `ExecStopPost` at teardown.
+
+The login screen is a separate system greeter (`cosmic-greeter` via greetd). Its wallpaper comes from the greeter daemon, which keeps its own persisted copy of the last-login background **source path** — it does not follow live config changes. That is why on/off never edit the config's `source:` line: the config always points at `Target/Sticky.png` and on/off atomically swap that **file's content** instead (clean image for off, rendered notes for on). Whatever path the greeter captured, it renders a file whose content always matches the current mode, so the login screen is clean at logout, at boot after shutdown/reboot, and notes appear right after login. As extra insurance, `sticky on` also checks logind and only applies when a real (non-greeter) session is active.
+
+`serve` and `watch-lock` are fully independent — each runs in its own service, so a note edit re-renders even outside a login event, and lock/suspend/shutdown switching never blocks note watching.
 
 ## How the wallpaper refresh works (no restart)
 
-`cosmic-bg` watches `~/.config/cosmic/com.system76.CosmicBackground/v1/all` with inotify and re-renders on any config change — but it ignores a write whose parsed content is unchanged, which would freeze note edits (same config, new PNG). So the scripts flip `rotation_frequency` between `300` and `301` on every apply. The value is meaningless for single-image sources, but the difference forces `cosmic-bg` to reload and crossfade to the freshly rendered PNG.
+On and off never change the config's `source:` — it always points at `Target/Sticky.png` and the rendered notes live in `Target/notes.png`. Applying a mode copies the right file over a temp name and atomically `mv`s it onto `Target/Sticky.png` (the greeter's persisted source path always resolves to the current content this way).
+
+`cosmic-bg` watches `~/.config/cosmic/com.system76.CosmicBackground/v1/all` with inotify and re-renders on any config change — but it ignores a write whose parsed content is unchanged, which would freeze note edits (same config, new PNG). So the scripts flip `rotation_frequency` between `300` and `301` on every apply. The value is meaningless for single-image sources, but the difference forces `cosmic-bg` to reload and crossfade to the freshly swapped PNG.
 
 The config is written atomically: `sed` renders the template into a `.atomicwrite-*` temp file inside the config dir, then `mv` swaps it into place — mirroring how COSMIC itself writes configs, so the watcher fires exactly once with complete content. `cosmic-bg` is never killed — sticky only edits its config file, and `cosmic-bg` itself is started and owned by the COSMIC session.
 
