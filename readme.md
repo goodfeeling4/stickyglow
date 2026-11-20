@@ -105,9 +105,11 @@ The login screen is a separate system greeter (`cosmic-greeter` via greetd). Its
 
 On and off never change the config's `source:` — it always points at `Target/Sticky.png` and the rendered notes live in `Target/notes.png`. Applying a mode copies the right file over a temp name and atomically `mv`s it onto `Target/Sticky.png` (the greeter's persisted source path always resolves to the current content this way).
 
-`cosmic-bg` watches `~/.config/cosmic/com.system76.CosmicBackground/v1/all` with inotify and re-renders on any config change — but it ignores a write whose parsed content is unchanged, which would freeze note edits (same config, new PNG). So the scripts flip `rotation_frequency` between `300` and `301` on every apply. The value is meaningless for single-image sources, but the difference forces `cosmic-bg` to reload and crossfade to the freshly swapped PNG.
+`cosmic-bg` re-renders on any change to the config it actually watches, but it ignores a write whose parsed content is unchanged, which would freeze note edits (same config, new PNG). So the scripts bump `rotation_frequency` on every apply. The value is meaningless for single-image sources, but the difference forces `cosmic-bg` to reload and crossfade to the freshly swapped PNG. It always increases so even two applies that arrive almost at once cannot cancel each other out.
 
-The config is written atomically: `sed` renders the template into a `.atomicwrite-*` temp file inside the config dir, then `mv` swaps it into place — mirroring how COSMIC itself writes configs, so the watcher fires exactly once with complete content. `cosmic-bg` is never killed — sticky only edits its config file, and `cosmic-bg` itself is started and owned by the COSMIC session.
+Since cosmic-bg 1.11 the background config is per theme mode: the live file is `~/.config/cosmic/com.system76.CosmicBackground.Dark/v1/all` or `...Light/v1/all` (chosen by `com.system76.CosmicTheme.Mode/v1/is_dark`), while `~/.config/cosmic/com.system76.CosmicBackground/v1/all` is only a legacy/shared seed. Writing only the legacy file leaves the wallpaper frozen after an update. Sticky writes the template to the legacy file **and both** mode files, so whichever theme is active reloads and switching themes later cannot break it.
+
+Each config is written atomically: `sed` renders the template into a `.atomicwrite-*` temp file inside the config dir, then `mv` swaps it into place — mirroring how COSMIC itself writes configs, so the watcher fires exactly once with complete content. `cosmic-bg` is never killed — sticky only edits its config files, and `cosmic-bg` itself is started and owned by the COSMIC session.
 
 ## How rapid note saves are handled (one render at a time)
 
